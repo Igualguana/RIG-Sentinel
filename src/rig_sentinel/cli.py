@@ -73,6 +73,21 @@ def report_to_dict(report) -> dict:
                         exposure.blast_radius_score
                     ),
                     "severity": exposure.severity,
+                    "recommendations": [
+                        {
+                            "tool": recommendation.tool,
+                            "priority": recommendation.priority,
+                            "title": recommendation.title,
+                            "recommendation": (
+                                recommendation.recommendation
+                            ),
+                            "expected_risk_reduction": (
+                                recommendation.expected_risk_reduction
+                            ),
+                        }
+                        for recommendation
+                        in exposure.recommendations
+                    ],
                 }
                 for exposure in report.exposure.exposures
             ],
@@ -200,6 +215,31 @@ def print_report(report) -> None:
                     print(f"  - {resource}")
 
             print()
+
+            print("RECOMMENDED REMEDIATION")
+            print("-" * 52)
+
+            if not exposure.recommendations:
+                print("No remediation recommendations")
+            else:
+                for recommendation in exposure.recommendations:
+                    print(
+                        f"[{recommendation.priority}] "
+                        f"{recommendation.title}"
+                    )
+                    print(
+                        f"Tool: "
+                        f"{recommendation.tool}"
+                    )
+                    print(
+                        f"Expected risk reduction: "
+                        f"{recommendation.expected_risk_reduction}"
+                    )
+                    print(
+                        f"Recommendation: "
+                        f"{recommendation.recommendation}"
+                    )
+                    print()
 
     print("EXPOSURE SUMMARY")
     print("-" * 52)

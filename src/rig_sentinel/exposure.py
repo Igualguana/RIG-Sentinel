@@ -8,6 +8,10 @@ from rig_sentinel.blast_radius import BlastRadiusEngine
 from rig_sentinel.graph import PermissionGraph
 from rig_sentinel.models import Agent
 from rig_sentinel.permissions import PermissionInferenceEngine
+from rig_sentinel.remediation import (
+    RemediationEngine,
+    RemediationRecommendation,
+)
 
 
 @dataclass(frozen=True)
@@ -20,13 +24,18 @@ class ExposureResult:
     medium_paths: int
     blast_radius_score: int
     severity: str
+    recommendations: tuple[RemediationRecommendation, ...]
 
 
 class ExposureAnalyzer:
     def __init__(self) -> None:
         self.permission_engine = PermissionInferenceEngine()
+        self.remediation_engine = RemediationEngine()
 
-    def analyze(self, finding: AgentFinding) -> ExposureResult:
+    def analyze(
+        self,
+        finding: AgentFinding,
+    ) -> ExposureResult:
         inference_results = self.permission_engine.infer_many(
             finding.tools
         )
@@ -53,22 +62,29 @@ class ExposureAnalyzer:
         graph.add_agent(agent)
 
         attack_engine = AttackPathEngine(graph)
+
         attack_paths = attack_engine.find_paths_from_agent(
             finding.name
         )
 
         blast_engine = BlastRadiusEngine(graph)
-        blast_result = blast_engine.analyze(
+
+        blast = blast_engine.analyze(
             finding.name
+        )
+
+        recommendations = self.remediation_engine.recommend(
+            finding
         )
 
         return ExposureResult(
             agent=finding.name,
-            reachable_resources=blast_result.reachable_resources,
+            reachable_resources=blast.reachable_resources,
             attack_paths=len(attack_paths),
-            critical_paths=blast_result.critical_paths,
-            high_paths=blast_result.high_paths,
-            medium_paths=blast_result.medium_paths,
-            blast_radius_score=blast_result.score,
-            severity=blast_result.severity,
+            critical_paths=blast.critical_paths,
+            high_paths=blast.high_paths,
+            medium_paths=blast.medium_paths,
+            blast_radius_score=blast.score,
+            severity=blast.severity,
+            recommendations=recommendations,
         )
