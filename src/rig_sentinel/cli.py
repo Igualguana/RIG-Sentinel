@@ -100,6 +100,17 @@ def report_to_dict(report) -> dict:
             }
             for finding in report.least_privilege_findings
         ],
+        "shared_credential_findings": [
+            {
+                "identity": finding.identity,
+                "agents": list(finding.agents),
+                "usage_count": finding.usage_count,
+                "severity": finding.severity,
+                "reason": finding.reason,
+                "recommendation": finding.recommendation,
+            }
+            for finding in report.shared_credential_findings
+        ],
         "agents": [
             {
                 "name": item.name,
@@ -342,6 +353,31 @@ def print_report(report) -> None:
             )
             print()
 
+    print("SHARED CREDENTIALS")
+    print("-" * 52)
+
+    if not report.shared_credential_findings:
+        print("No shared credentials detected")
+    else:
+        for finding in sorted(
+            report.shared_credential_findings,
+            key=_shared_credential_sort_key,
+        ):
+            print(f"[{finding.severity}]")
+            print(f"Identity: {finding.identity}")
+            print(f"Usage count: {finding.usage_count}")
+            print("Used by:")
+
+            for agent in finding.agents:
+                print(f"  - {agent}")
+
+            print(f"Reason: {finding.reason}")
+            print(
+                f"Recommendation: "
+                f"{finding.recommendation}"
+            )
+            print()
+
     print("AGENTS")
     print("-" * 52)
 
@@ -502,6 +538,10 @@ def print_report(report) -> None:
         f"Least privilege findings:"
         f" {report.least_privilege_finding_count}"
     )
+    print(
+        f"Shared credentials:      "
+        f"{report.shared_credential_finding_count}"
+    )
     print(f"Agents:                  {report.agent_count}")
 
 
@@ -559,6 +599,25 @@ def _privilege_sort_key(
 
 
 def _least_privilege_sort_key(
+    finding,
+) -> tuple[int, str]:
+    priority = {
+        "CRITICAL": 0,
+        "HIGH": 1,
+        "MEDIUM": 2,
+        "LOW": 3,
+    }
+
+    return (
+        priority.get(
+            finding.severity,
+            99,
+        ),
+        finding.identity,
+    )
+
+
+def _shared_credential_sort_key(
     finding,
 ) -> tuple[int, str]:
     priority = {

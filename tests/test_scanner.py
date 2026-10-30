@@ -367,3 +367,46 @@ stripe.refunds.create()
     assert finding.provider == "stripe"
     assert finding.observed_capability == "financial_action"
     assert finding.severity == "CRITICAL"
+def test_scanner_detects_shared_credential(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "agent_a.py"
+    second = tmp_path / "agent_b.py"
+
+    first.write_text(
+        """
+import os
+from openai import OpenAI
+
+openai_key = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=openai_key)
+""",
+        encoding="utf-8",
+    )
+
+    second.write_text(
+        """
+import os
+from openai import OpenAI
+
+openai_key = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=openai_key)
+""",
+        encoding="utf-8",
+    )
+
+    scanner = RepositoryScanner(tmp_path)
+
+    report = scanner.scan()
+
+    assert report.shared_credential_finding_count == 1
+
+    finding = report.shared_credential_findings[0]
+
+    assert finding.identity == "OPENAI_API_KEY"
+    assert finding.usage_count == 2
+    assert finding.severity == "HIGH"
+    assert finding.agents == (
+        "agent_a",
+        "agent_b",
+    )

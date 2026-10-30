@@ -28,6 +28,10 @@ from rig_sentinel.privilege import (
 )
 from rig_sentinel.providers import ProviderDetector, ProviderFinding
 from rig_sentinel.repository import RepositoryWalker
+from rig_sentinel.shared_credentials import (
+    SharedCredentialAnalyzer,
+    SharedCredentialFinding,
+)
 from rig_sentinel.tools import ToolDetector, ToolFinding
 
 
@@ -43,6 +47,7 @@ class ScanReport:
     credential_flows: tuple[CredentialFlowFinding, ...]
     privilege_findings: tuple[PrivilegeFinding, ...]
     least_privilege_findings: tuple[LeastPrivilegeFinding, ...]
+    shared_credential_findings: tuple[SharedCredentialFinding, ...]
     agents: tuple[AgentFinding, ...]
     exposure: ExposureReport
 
@@ -79,6 +84,10 @@ class ScanReport:
         return len(self.least_privilege_findings)
 
     @property
+    def shared_credential_finding_count(self) -> int:
+        return len(self.shared_credential_findings)
+
+    @property
     def agent_count(self) -> int:
         return len(self.agents)
 
@@ -96,6 +105,7 @@ class RepositoryScanner:
         self.credential_flow_analyzer = CredentialFlowAnalyzer()
         self.privilege_analyzer = PrivilegeAnalyzer()
         self.least_privilege_analyzer = LeastPrivilegeAnalyzer()
+        self.shared_credential_analyzer = SharedCredentialAnalyzer()
         self.agent_detector = AgentDetector()
         self.exposure_builder = ExposureReportBuilder()
 
@@ -194,16 +204,24 @@ class RepositoryScanner:
             tuple(identities),
         )
 
+        credential_flows_tuple = tuple(credential_flows)
+
         privilege_findings = self.privilege_analyzer.analyze(
             tuple(agents),
             identity_links,
-            tuple(credential_flows),
+            credential_flows_tuple,
         )
 
         least_privilege_findings = (
             self.least_privilege_analyzer.analyze(
-                tuple(credential_flows),
+                credential_flows_tuple,
                 privilege_findings,
+            )
+        )
+
+        shared_credential_findings = (
+            self.shared_credential_analyzer.analyze(
+                identity_links,
             )
         )
 
@@ -219,9 +237,10 @@ class RepositoryScanner:
             tools=tuple(tools),
             identities=tuple(identities),
             identity_links=identity_links,
-            credential_flows=tuple(credential_flows),
+            credential_flows=credential_flows_tuple,
             privilege_findings=privilege_findings,
             least_privilege_findings=least_privilege_findings,
+            shared_credential_findings=shared_credential_findings,
             agents=tuple(agents),
             exposure=exposure,
         )
