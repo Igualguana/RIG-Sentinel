@@ -17,6 +17,10 @@ from rig_sentinel.identity_linking import (
     AgentIdentityLink,
     IdentityLinker,
 )
+from rig_sentinel.least_privilege import (
+    LeastPrivilegeAnalyzer,
+    LeastPrivilegeFinding,
+)
 from rig_sentinel.mcp import MCPDetector, MCPFinding
 from rig_sentinel.privilege import (
     PrivilegeAnalyzer,
@@ -38,6 +42,7 @@ class ScanReport:
     identity_links: tuple[AgentIdentityLink, ...]
     credential_flows: tuple[CredentialFlowFinding, ...]
     privilege_findings: tuple[PrivilegeFinding, ...]
+    least_privilege_findings: tuple[LeastPrivilegeFinding, ...]
     agents: tuple[AgentFinding, ...]
     exposure: ExposureReport
 
@@ -70,6 +75,10 @@ class ScanReport:
         return len(self.privilege_findings)
 
     @property
+    def least_privilege_finding_count(self) -> int:
+        return len(self.least_privilege_findings)
+
+    @property
     def agent_count(self) -> int:
         return len(self.agents)
 
@@ -86,6 +95,7 @@ class RepositoryScanner:
         self.identity_linker = IdentityLinker()
         self.credential_flow_analyzer = CredentialFlowAnalyzer()
         self.privilege_analyzer = PrivilegeAnalyzer()
+        self.least_privilege_analyzer = LeastPrivilegeAnalyzer()
         self.agent_detector = AgentDetector()
         self.exposure_builder = ExposureReportBuilder()
 
@@ -190,6 +200,13 @@ class RepositoryScanner:
             tuple(credential_flows),
         )
 
+        least_privilege_findings = (
+            self.least_privilege_analyzer.analyze(
+                tuple(credential_flows),
+                privilege_findings,
+            )
+        )
+
         exposure = self.exposure_builder.build(
             tuple(agents)
         )
@@ -204,6 +221,7 @@ class RepositoryScanner:
             identity_links=identity_links,
             credential_flows=tuple(credential_flows),
             privilege_findings=privilege_findings,
+            least_privilege_findings=least_privilege_findings,
             agents=tuple(agents),
             exposure=exposure,
         )

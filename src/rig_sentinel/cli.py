@@ -63,6 +63,18 @@ def report_to_dict(report) -> dict:
             }
             for link in report.identity_links
         ],
+        "credential_flows": [
+            {
+                "credential": flow.credential,
+                "variable": flow.variable,
+                "provider": flow.provider,
+                "capability": flow.capability,
+                "file": flow.file,
+                "confidence": flow.confidence,
+                "evidence": flow.evidence,
+            }
+            for flow in report.credential_flows
+        ],
         "privilege_findings": [
             {
                 "agent": finding.agent,
@@ -73,6 +85,20 @@ def report_to_dict(report) -> dict:
                 "recommendation": finding.recommendation,
             }
             for finding in report.privilege_findings
+        ],
+        "least_privilege_findings": [
+            {
+                "identity": finding.identity,
+                "provider": finding.provider,
+                "observed_capability": finding.observed_capability,
+                "severity": finding.severity,
+                "recommended_scope": finding.recommended_scope,
+                "avoid_permissions": list(
+                    finding.avoid_permissions
+                ),
+                "recommendation": finding.recommendation,
+            }
+            for finding in report.least_privilege_findings
         ],
         "agents": [
             {
@@ -241,6 +267,24 @@ def print_report(report) -> None:
 
             print()
 
+    print("CREDENTIAL FLOWS")
+    print("-" * 52)
+
+    if not report.credential_flows:
+        print("No credential flows detected")
+    else:
+        for flow in report.credential_flows:
+            provider = flow.provider or "-"
+            capability = flow.capability or "unproven"
+
+            print(f"Credential:  {flow.credential}")
+            print(f"Variable:    {flow.variable}")
+            print(f"Provider:    {provider}")
+            print(f"Capability:  {capability}")
+            print(f"Confidence:  {flow.confidence}")
+            print(f"Evidence:    {flow.evidence}")
+            print()
+
     print("EXCESSIVE PRIVILEGE")
     print("-" * 52)
 
@@ -256,6 +300,42 @@ def print_report(report) -> None:
             print(f"Identity:   {finding.identity}")
             print(f"Capability: {finding.capability}")
             print(f"Reason:     {finding.reason}")
+            print(
+                f"Recommendation: "
+                f"{finding.recommendation}"
+            )
+            print()
+
+    print("LEAST PRIVILEGE")
+    print("-" * 52)
+
+    if not report.least_privilege_findings:
+        print("No least-privilege findings detected")
+    else:
+        for finding in sorted(
+            report.least_privilege_findings,
+            key=_least_privilege_sort_key,
+        ):
+            provider = finding.provider or "-"
+
+            print(f"[{finding.severity}]")
+            print(f"Identity: {finding.identity}")
+            print(f"Provider: {provider}")
+            print(
+                f"Observed capability: "
+                f"{finding.observed_capability}"
+            )
+            print(
+                f"Recommended scope: "
+                f"{finding.recommended_scope}"
+            )
+
+            if finding.avoid_permissions:
+                print("Avoid:")
+
+                for permission in finding.avoid_permissions:
+                    print(f"  - {permission}")
+
             print(
                 f"Recommendation: "
                 f"{finding.recommendation}"
@@ -408,16 +488,21 @@ def print_report(report) -> None:
     print()
     print("SUMMARY")
     print("-" * 52)
-    print(f"Providers:          {report.provider_count}")
-    print(f"MCP findings:       {report.mcp_count}")
-    print(f"Tools:              {report.tool_count}")
-    print(f"Identities:         {report.identity_count}")
-    print(f"Identity links:     {report.identity_link_count}")
+    print(f"Providers:               {report.provider_count}")
+    print(f"MCP findings:            {report.mcp_count}")
+    print(f"Tools:                   {report.tool_count}")
+    print(f"Identities:              {report.identity_count}")
+    print(f"Identity links:          {report.identity_link_count}")
+    print(f"Credential flows:        {report.credential_flow_count}")
     print(
-        f"Privilege findings: "
+        f"Privilege findings:      "
         f"{report.privilege_finding_count}"
     )
-    print(f"Agents:             {report.agent_count}")
+    print(
+        f"Least privilege findings:"
+        f" {report.least_privilege_finding_count}"
+    )
+    print(f"Agents:                  {report.agent_count}")
 
 
 def _attack_path_sort_key(path) -> tuple[int, str]:
@@ -470,6 +555,25 @@ def _privilege_sort_key(
         ),
         finding.agent,
         finding.capability,
+    )
+
+
+def _least_privilege_sort_key(
+    finding,
+) -> tuple[int, str]:
+    priority = {
+        "CRITICAL": 0,
+        "HIGH": 1,
+        "MEDIUM": 2,
+        "LOW": 3,
+    }
+
+    return (
+        priority.get(
+            finding.severity,
+            99,
+        ),
+        finding.identity,
     )
 
 

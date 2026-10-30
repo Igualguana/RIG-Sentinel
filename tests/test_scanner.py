@@ -333,3 +333,37 @@ stripe.refunds.create()
     assert flow.provider == "stripe"
     assert flow.capability == "financial_action"
     assert flow.confidence == "HIGH"
+def test_scanner_builds_least_privilege_recommendation(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "agent.py"
+
+    source.write_text(
+        """
+import os
+import stripe
+from openai import OpenAI
+
+stripe_key = os.getenv("STRIPE_SECRET_KEY")
+
+client = OpenAI()
+
+stripe.api_key = stripe_key
+stripe.refunds.create()
+""",
+        encoding="utf-8",
+    )
+
+    scanner = RepositoryScanner(tmp_path)
+
+    report = scanner.scan()
+
+    assert report.privilege_finding_count == 1
+    assert report.least_privilege_finding_count == 1
+
+    finding = report.least_privilege_findings[0]
+
+    assert finding.identity == "STRIPE_SECRET_KEY"
+    assert finding.provider == "stripe"
+    assert finding.observed_capability == "financial_action"
+    assert finding.severity == "CRITICAL"
