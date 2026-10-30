@@ -66,6 +66,15 @@ def report_to_dict(report) -> dict:
                         exposure.reachable_resources
                     ),
                     "attack_paths": exposure.attack_paths,
+                    "attack_path_details": [
+                        {
+                            "source": path.source,
+                            "target": path.target,
+                            "risk": path.risk,
+                            "nodes": list(path.nodes),
+                        }
+                        for path in exposure.attack_path_details
+                    ],
                     "critical_paths": exposure.critical_paths,
                     "high_paths": exposure.high_paths,
                     "medium_paths": exposure.medium_paths,
@@ -216,13 +225,36 @@ def print_report(report) -> None:
 
             print()
 
+            print("ATTACK PATHS")
+            print("-" * 52)
+
+            if not exposure.attack_path_details:
+                print("No actionable attack paths detected")
+            else:
+                for path in sorted(
+                    exposure.attack_path_details,
+                    key=_attack_path_sort_key,
+                ):
+                    print(f"[{path.risk}]")
+
+                    for index, node in enumerate(path.nodes):
+                        if index == 0:
+                            print(node)
+                        else:
+                            print(f"  -> {node}")
+
+                    print()
+
             print("RECOMMENDED REMEDIATION")
             print("-" * 52)
 
             if not exposure.recommendations:
                 print("No remediation recommendations")
             else:
-                for recommendation in exposure.recommendations:
+                for recommendation in sorted(
+                    exposure.recommendations,
+                    key=_remediation_sort_key,
+                ):
                     print(
                         f"[{recommendation.priority}] "
                         f"{recommendation.title}"
@@ -271,6 +303,39 @@ def print_report(report) -> None:
     print(f"MCP findings:     {report.mcp_count}")
     print(f"Tools:            {report.tool_count}")
     print(f"Agents:           {report.agent_count}")
+
+
+def _attack_path_sort_key(path) -> tuple[int, str]:
+    priority = {
+        "CRITICAL": 0,
+        "HIGH": 1,
+        "MEDIUM": 2,
+        "LOW": 3,
+    }
+
+    return (
+        priority.get(path.risk, 99),
+        path.target,
+    )
+
+
+def _remediation_sort_key(
+    recommendation,
+) -> tuple[int, str]:
+    priority = {
+        "CRITICAL": 0,
+        "HIGH": 1,
+        "MEDIUM": 2,
+        "LOW": 3,
+    }
+
+    return (
+        priority.get(
+            recommendation.priority,
+            99,
+        ),
+        recommendation.title,
+    )
 
 
 def main() -> None:

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from rig_sentinel.agents import AgentFinding
-from rig_sentinel.attack_paths import AttackPathEngine
+from rig_sentinel.attack_paths import AttackPath, AttackPathEngine
 from rig_sentinel.blast_radius import BlastRadiusEngine
 from rig_sentinel.graph import PermissionGraph
 from rig_sentinel.models import Agent
@@ -19,6 +19,7 @@ class ExposureResult:
     agent: str
     reachable_resources: tuple[str, ...]
     attack_paths: int
+    attack_path_details: tuple[AttackPath, ...]
     critical_paths: int
     high_paths: int
     medium_paths: int
@@ -81,6 +82,7 @@ class ExposureAnalyzer:
             agent=finding.name,
             reachable_resources=blast.reachable_resources,
             attack_paths=len(attack_paths),
+            attack_path_details=tuple(attack_paths),
             critical_paths=blast.critical_paths,
             high_paths=blast.high_paths,
             medium_paths=blast.medium_paths,
