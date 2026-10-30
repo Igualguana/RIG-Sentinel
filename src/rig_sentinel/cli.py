@@ -111,6 +111,20 @@ def report_to_dict(report) -> dict:
             }
             for finding in report.shared_credential_findings
         ],
+        "shadow_agent_findings": [
+            {
+                "agent": finding.agent,
+                "file": finding.file,
+                "provider": finding.provider,
+                "severity": finding.severity,
+                "sensitive_capabilities": list(
+                    finding.sensitive_capabilities
+                ),
+                "reason": finding.reason,
+                "recommendation": finding.recommendation,
+            }
+            for finding in report.shadow_agent_findings
+        ],
         "agents": [
             {
                 "name": item.name,
@@ -378,6 +392,36 @@ def print_report(report) -> None:
             )
             print()
 
+    print("SHADOW AGENTS")
+    print("-" * 52)
+
+    if not report.shadow_agent_findings:
+        print("No shadow agents detected")
+    else:
+        for finding in sorted(
+            report.shadow_agent_findings,
+            key=_shadow_agent_sort_key,
+        ):
+            provider = finding.provider or "-"
+
+            print(f"[{finding.severity}]")
+            print(f"Agent:    {finding.agent}")
+            print(f"File:     {finding.file}")
+            print(f"Provider: {provider}")
+
+            if finding.sensitive_capabilities:
+                print("Sensitive capabilities:")
+
+                for capability in finding.sensitive_capabilities:
+                    print(f"  - {capability}")
+
+            print(f"Reason: {finding.reason}")
+            print(
+                f"Recommendation: "
+                f"{finding.recommendation}"
+            )
+            print()
+
     print("AGENTS")
     print("-" * 52)
 
@@ -542,6 +586,10 @@ def print_report(report) -> None:
         f"Shared credentials:      "
         f"{report.shared_credential_finding_count}"
     )
+    print(
+        f"Shadow agents:           "
+        f"{report.shadow_agent_finding_count}"
+    )
     print(f"Agents:                  {report.agent_count}")
 
 
@@ -633,6 +681,25 @@ def _shared_credential_sort_key(
             99,
         ),
         finding.identity,
+    )
+
+
+def _shadow_agent_sort_key(
+    finding,
+) -> tuple[int, str]:
+    priority = {
+        "CRITICAL": 0,
+        "HIGH": 1,
+        "MEDIUM": 2,
+        "LOW": 3,
+    }
+
+    return (
+        priority.get(
+            finding.severity,
+            99,
+        ),
+        finding.agent,
     )
 
 

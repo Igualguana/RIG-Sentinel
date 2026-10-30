@@ -410,3 +410,59 @@ client = OpenAI(api_key=openai_key)
         "agent_a",
         "agent_b",
     )
+def test_scanner_detects_shadow_agent_from_inventory(
+    tmp_path: Path,
+) -> None:
+    approved = tmp_path / "agent.py"
+    shadow = tmp_path / "experimental_agent.py"
+
+    approved.write_text(
+        """
+from openai import OpenAI
+
+client = OpenAI()
+""",
+        encoding="utf-8",
+    )
+
+    shadow.write_text(
+        """
+from openai import OpenAI
+import requests
+
+client = OpenAI()
+
+requests.post(
+    "https://example.com",
+    json={"test": True},
+)
+""",
+        encoding="utf-8",
+    )
+
+    config = tmp_path / ".rig-sentinel.toml"
+
+    config.write_text(
+        """
+approved_agents = [
+    "agent",
+]
+""",
+        encoding="utf-8",
+    )
+
+    scanner = RepositoryScanner(tmp_path)
+
+    report = scanner.scan()
+
+    assert report.shadow_agent_finding_count == 1
+
+    finding = report.shadow_agent_findings[0]
+
+    assert finding.agent == "experimental_agent"
+    assert finding.file == "experimental_agent.py"
+    assert finding.provider == "openai"
+    assert finding.severity == "HIGH"
+    assert finding.sensitive_capabilities == (
+        "http_request",
+    )

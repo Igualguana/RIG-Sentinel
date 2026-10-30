@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rig_sentinel.agents import AgentDetector, AgentFinding
+from rig_sentinel.config import ConfigLoader
 from rig_sentinel.credential_flow import (
     CredentialFlowAnalyzer,
     CredentialFlowFinding,
@@ -28,6 +29,10 @@ from rig_sentinel.privilege import (
 )
 from rig_sentinel.providers import ProviderDetector, ProviderFinding
 from rig_sentinel.repository import RepositoryWalker
+from rig_sentinel.shadow_agents import (
+    ShadowAgentAnalyzer,
+    ShadowAgentFinding,
+)
 from rig_sentinel.shared_credentials import (
     SharedCredentialAnalyzer,
     SharedCredentialFinding,
@@ -48,6 +53,7 @@ class ScanReport:
     privilege_findings: tuple[PrivilegeFinding, ...]
     least_privilege_findings: tuple[LeastPrivilegeFinding, ...]
     shared_credential_findings: tuple[SharedCredentialFinding, ...]
+    shadow_agent_findings: tuple[ShadowAgentFinding, ...]
     agents: tuple[AgentFinding, ...]
     exposure: ExposureReport
 
@@ -88,6 +94,10 @@ class ScanReport:
         return len(self.shared_credential_findings)
 
     @property
+    def shadow_agent_finding_count(self) -> int:
+        return len(self.shadow_agent_findings)
+
+    @property
     def agent_count(self) -> int:
         return len(self.agents)
 
@@ -97,15 +107,20 @@ class RepositoryScanner:
         self.root = root.resolve()
 
         self.walker = RepositoryWalker(self.root)
+        self.config_loader = ConfigLoader()
+
         self.provider_detector = ProviderDetector()
         self.mcp_detector = MCPDetector()
         self.tool_detector = ToolDetector()
         self.identity_detector = IdentityDetector()
         self.identity_linker = IdentityLinker()
+
         self.credential_flow_analyzer = CredentialFlowAnalyzer()
         self.privilege_analyzer = PrivilegeAnalyzer()
         self.least_privilege_analyzer = LeastPrivilegeAnalyzer()
         self.shared_credential_analyzer = SharedCredentialAnalyzer()
+        self.shadow_agent_analyzer = ShadowAgentAnalyzer()
+
         self.agent_detector = AgentDetector()
         self.exposure_builder = ExposureReportBuilder()
 
@@ -199,17 +214,23 @@ class RepositoryScanner:
 
         agents = self._unique(agents)
 
+        config = self.config_loader.load(self.root)
+
         identity_links = self.identity_linker.link(
             tuple(agents),
             tuple(identities),
         )
 
-        credential_flows_tuple = tuple(credential_flows)
+        credential_flows_tuple = tuple(
+            credential_flows
+        )
 
-        privilege_findings = self.privilege_analyzer.analyze(
-            tuple(agents),
-            identity_links,
-            credential_flows_tuple,
+        privilege_findings = (
+            self.privilege_analyzer.analyze(
+                tuple(agents),
+                identity_links,
+                credential_flows_tuple,
+            )
         )
 
         least_privilege_findings = (
@@ -222,6 +243,13 @@ class RepositoryScanner:
         shared_credential_findings = (
             self.shared_credential_analyzer.analyze(
                 identity_links,
+            )
+        )
+
+        shadow_agent_findings = (
+            self.shadow_agent_analyzer.analyze(
+                tuple(agents),
+                config.approved_agents,
             )
         )
 
@@ -241,6 +269,7 @@ class RepositoryScanner:
             privilege_findings=privilege_findings,
             least_privilege_findings=least_privilege_findings,
             shared_credential_findings=shared_credential_findings,
+            shadow_agent_findings=shadow_agent_findings,
             agents=tuple(agents),
             exposure=exposure,
         )
