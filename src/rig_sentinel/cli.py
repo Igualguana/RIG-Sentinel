@@ -41,6 +41,17 @@ def report_to_dict(report) -> dict:
             }
             for item in report.tools
         ],
+        "identities": [
+            {
+                "name": item.name,
+                "identity_type": item.identity_type,
+                "provider": item.provider,
+                "confidence": item.confidence,
+                "file": item.file,
+                "evidence": item.evidence,
+            }
+            for item in report.identities
+        ],
         "agents": [
             {
                 "name": item.name,
@@ -150,6 +161,23 @@ def print_report(report) -> None:
                 f"{finding.name:20} "
                 f"{finding.category:15} "
                 f"{finding.file}"
+            )
+
+    print()
+    print("IDENTITIES / CREDENTIAL REFERENCES")
+    print("-" * 52)
+
+    if not report.identities:
+        print("None detected")
+    else:
+        for identity in report.identities:
+            provider = identity.provider or "-"
+
+            print(
+                f"{identity.name:28} "
+                f"{identity.identity_type:20} "
+                f"{provider:12} "
+                f"{identity.confidence}"
             )
 
     print()
@@ -302,6 +330,7 @@ def print_report(report) -> None:
     print(f"Providers:        {report.provider_count}")
     print(f"MCP findings:     {report.mcp_count}")
     print(f"Tools:            {report.tool_count}")
+    print(f"Identities:       {report.identity_count}")
     print(f"Agents:           {report.agent_count}")
 
 

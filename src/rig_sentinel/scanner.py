@@ -8,6 +8,7 @@ from rig_sentinel.exposure_report import (
     ExposureReport,
     ExposureReportBuilder,
 )
+from rig_sentinel.identity import IdentityDetector, IdentityFinding
 from rig_sentinel.mcp import MCPDetector, MCPFinding
 from rig_sentinel.providers import ProviderDetector, ProviderFinding
 from rig_sentinel.repository import RepositoryWalker
@@ -21,6 +22,7 @@ class ScanReport:
     providers: tuple[ProviderFinding, ...]
     mcp_findings: tuple[MCPFinding, ...]
     tools: tuple[ToolFinding, ...]
+    identities: tuple[IdentityFinding, ...]
     agents: tuple[AgentFinding, ...]
     exposure: ExposureReport
 
@@ -37,6 +39,10 @@ class ScanReport:
         return len(self.tools)
 
     @property
+    def identity_count(self) -> int:
+        return len(self.identities)
+
+    @property
     def agent_count(self) -> int:
         return len(self.agents)
 
@@ -49,6 +55,7 @@ class RepositoryScanner:
         self.provider_detector = ProviderDetector()
         self.mcp_detector = MCPDetector()
         self.tool_detector = ToolDetector()
+        self.identity_detector = IdentityDetector()
         self.agent_detector = AgentDetector()
         self.exposure_builder = ExposureReportBuilder()
 
@@ -56,6 +63,7 @@ class RepositoryScanner:
         providers: list[ProviderFinding] = []
         mcp_findings: list[MCPFinding] = []
         tools: list[ToolFinding] = []
+        identities: list[IdentityFinding] = []
 
         files_scanned = 0
 
@@ -97,9 +105,18 @@ class RepositoryScanner:
                 )
             )
 
+            identities.extend(
+                self.identity_detector.detect(
+                    path,
+                    relative_path,
+                    text,
+                )
+            )
+
         providers = self._unique(providers)
         mcp_findings = self._unique(mcp_findings)
         tools = self._unique(tools)
+        identities = self._unique(identities)
 
         agents: list[AgentFinding] = []
 
@@ -132,6 +149,7 @@ class RepositoryScanner:
             providers=tuple(providers),
             mcp_findings=tuple(mcp_findings),
             tools=tuple(tools),
+            identities=tuple(identities),
             agents=tuple(agents),
             exposure=exposure,
         )

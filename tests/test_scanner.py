@@ -198,3 +198,31 @@ stripe.refunds.create()
 
     assert exposure.critical_paths >= 2
     assert exposure.severity == "CRITICAL"
+def test_scanner_detects_identities(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "agent.py"
+
+    source.write_text(
+        """
+import os
+from openai import OpenAI
+
+api_key = os.getenv("OPENAI_API_KEY")
+
+client = OpenAI()
+""",
+        encoding="utf-8",
+    )
+
+    scanner = RepositoryScanner(tmp_path)
+
+    report = scanner.scan()
+
+    assert report.identity_count == 1
+
+    identity = report.identities[0]
+
+    assert identity.name == "OPENAI_API_KEY"
+    assert identity.identity_type == "api_key"
+    assert identity.provider == "openai"
