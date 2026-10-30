@@ -9,6 +9,10 @@ from rig_sentinel.exposure_report import (
     ExposureReportBuilder,
 )
 from rig_sentinel.identity import IdentityDetector, IdentityFinding
+from rig_sentinel.identity_linking import (
+    AgentIdentityLink,
+    IdentityLinker,
+)
 from rig_sentinel.mcp import MCPDetector, MCPFinding
 from rig_sentinel.providers import ProviderDetector, ProviderFinding
 from rig_sentinel.repository import RepositoryWalker
@@ -23,6 +27,7 @@ class ScanReport:
     mcp_findings: tuple[MCPFinding, ...]
     tools: tuple[ToolFinding, ...]
     identities: tuple[IdentityFinding, ...]
+    identity_links: tuple[AgentIdentityLink, ...]
     agents: tuple[AgentFinding, ...]
     exposure: ExposureReport
 
@@ -43,6 +48,10 @@ class ScanReport:
         return len(self.identities)
 
     @property
+    def identity_link_count(self) -> int:
+        return len(self.identity_links)
+
+    @property
     def agent_count(self) -> int:
         return len(self.agents)
 
@@ -56,6 +65,7 @@ class RepositoryScanner:
         self.mcp_detector = MCPDetector()
         self.tool_detector = ToolDetector()
         self.identity_detector = IdentityDetector()
+        self.identity_linker = IdentityLinker()
         self.agent_detector = AgentDetector()
         self.exposure_builder = ExposureReportBuilder()
 
@@ -139,6 +149,11 @@ class RepositoryScanner:
 
         agents = self._unique(agents)
 
+        identity_links = self.identity_linker.link(
+            tuple(agents),
+            tuple(identities),
+        )
+
         exposure = self.exposure_builder.build(
             tuple(agents)
         )
@@ -150,6 +165,7 @@ class RepositoryScanner:
             mcp_findings=tuple(mcp_findings),
             tools=tuple(tools),
             identities=tuple(identities),
+            identity_links=identity_links,
             agents=tuple(agents),
             exposure=exposure,
         )

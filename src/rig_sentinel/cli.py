@@ -52,6 +52,17 @@ def report_to_dict(report) -> dict:
             }
             for item in report.identities
         ],
+        "identity_links": [
+            {
+                "agent": link.agent,
+                "identity": link.identity,
+                "identity_type": link.identity_type,
+                "provider": link.provider,
+                "file": link.file,
+                "confidence": link.confidence,
+            }
+            for link in report.identity_links
+        ],
         "agents": [
             {
                 "name": item.name,
@@ -181,6 +192,48 @@ def print_report(report) -> None:
             )
 
     print()
+    print("AGENT IDENTITIES")
+    print("-" * 52)
+
+    if not report.identity_links:
+        print("No agent identity links detected")
+    else:
+        agents_with_links = sorted(
+            {
+                link.agent
+                for link in report.identity_links
+            }
+        )
+
+        for agent_name in agents_with_links:
+            print(f"Agent: {agent_name}")
+
+            links = [
+                link
+                for link in report.identity_links
+                if link.agent == agent_name
+            ]
+
+            for link in sorted(
+                links,
+                key=lambda item: item.identity,
+            ):
+                provider = link.provider or "-"
+
+                print(f"  -> {link.identity}")
+                print(
+                    f"     Type: {link.identity_type}"
+                )
+                print(
+                    f"     Provider: {provider}"
+                )
+                print(
+                    f"     Link confidence: "
+                    f"{link.confidence}"
+                )
+
+            print()
+
     print("AGENTS")
     print("-" * 52)
 
@@ -331,6 +384,7 @@ def print_report(report) -> None:
     print(f"MCP findings:     {report.mcp_count}")
     print(f"Tools:            {report.tool_count}")
     print(f"Identities:       {report.identity_count}")
+    print(f"Identity links:   {report.identity_link_count}")
     print(f"Agents:           {report.agent_count}")
 
 

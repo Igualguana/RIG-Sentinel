@@ -226,3 +226,33 @@ client = OpenAI()
     assert identity.name == "OPENAI_API_KEY"
     assert identity.identity_type == "api_key"
     assert identity.provider == "openai"
+def test_scanner_links_identity_to_agent(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "agent.py"
+
+    source.write_text(
+        """
+import os
+from openai import OpenAI
+
+api_key = os.getenv("OPENAI_API_KEY")
+
+client = OpenAI()
+""",
+        encoding="utf-8",
+    )
+
+    scanner = RepositoryScanner(tmp_path)
+
+    report = scanner.scan()
+
+    assert report.identity_count == 1
+    assert report.identity_link_count == 1
+
+    link = report.identity_links[0]
+
+    assert link.agent == "agent"
+    assert link.identity == "OPENAI_API_KEY"
+    assert link.provider == "openai"
+    assert link.confidence == "HIGH"
