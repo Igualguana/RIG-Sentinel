@@ -1,0 +1,2 @@
+[console_scripts]
+rig-sentinel = rig_sentinel.cli:main

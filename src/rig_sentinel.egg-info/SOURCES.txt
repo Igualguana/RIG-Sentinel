@@ -1,0 +1,10 @@
+README.md
+pyproject.toml
+src/rig_sentinel/__init__.py
+src/rig_sentinel/cli.py
+src/rig_sentinel.egg-info/PKG-INFO
+src/rig_sentinel.egg-info/SOURCES.txt
+src/rig_sentinel.egg-info/dependency_links.txt
+src/rig_sentinel.egg-info/entry_points.txt
+src/rig_sentinel.egg-info/top_level.txt
+tests/test_scan.py
