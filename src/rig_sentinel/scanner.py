@@ -4,6 +4,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rig_sentinel.agents import AgentDetector, AgentFinding
+from rig_sentinel.credential_flow import (
+    CredentialFlowAnalyzer,
+    CredentialFlowFinding,
+)
 from rig_sentinel.exposure_report import (
     ExposureReport,
     ExposureReportBuilder,
@@ -14,6 +18,10 @@ from rig_sentinel.identity_linking import (
     IdentityLinker,
 )
 from rig_sentinel.mcp import MCPDetector, MCPFinding
+from rig_sentinel.privilege import (
+    PrivilegeAnalyzer,
+    PrivilegeFinding,
+)
 from rig_sentinel.providers import ProviderDetector, ProviderFinding
 from rig_sentinel.repository import RepositoryWalker
 from rig_sentinel.tools import ToolDetector, ToolFinding
@@ -28,6 +36,8 @@ class ScanReport:
     tools: tuple[ToolFinding, ...]
     identities: tuple[IdentityFinding, ...]
     identity_links: tuple[AgentIdentityLink, ...]
+    credential_flows: tuple[CredentialFlowFinding, ...]
+    privilege_findings: tuple[PrivilegeFinding, ...]
     agents: tuple[AgentFinding, ...]
     exposure: ExposureReport
 
@@ -52,6 +62,14 @@ class ScanReport:
         return len(self.identity_links)
 
     @property
+    def credential_flow_count(self) -> int:
+        return len(self.credential_flows)
+
+    @property
+    def privilege_finding_count(self) -> int:
+        return len(self.privilege_findings)
+
+    @property
     def agent_count(self) -> int:
         return len(self.agents)
 
@@ -66,6 +84,8 @@ class RepositoryScanner:
         self.tool_detector = ToolDetector()
         self.identity_detector = IdentityDetector()
         self.identity_linker = IdentityLinker()
+        self.credential_flow_analyzer = CredentialFlowAnalyzer()
+        self.privilege_analyzer = PrivilegeAnalyzer()
         self.agent_detector = AgentDetector()
         self.exposure_builder = ExposureReportBuilder()
 
@@ -74,6 +94,7 @@ class RepositoryScanner:
         mcp_findings: list[MCPFinding] = []
         tools: list[ToolFinding] = []
         identities: list[IdentityFinding] = []
+        credential_flows: list[CredentialFlowFinding] = []
 
         files_scanned = 0
 
@@ -123,10 +144,19 @@ class RepositoryScanner:
                 )
             )
 
+            credential_flows.extend(
+                self.credential_flow_analyzer.analyze(
+                    path,
+                    relative_path,
+                    text,
+                )
+            )
+
         providers = self._unique(providers)
         mcp_findings = self._unique(mcp_findings)
         tools = self._unique(tools)
         identities = self._unique(identities)
+        credential_flows = self._unique(credential_flows)
 
         agents: list[AgentFinding] = []
 
@@ -154,6 +184,12 @@ class RepositoryScanner:
             tuple(identities),
         )
 
+        privilege_findings = self.privilege_analyzer.analyze(
+            tuple(agents),
+            identity_links,
+            tuple(credential_flows),
+        )
+
         exposure = self.exposure_builder.build(
             tuple(agents)
         )
@@ -166,6 +202,8 @@ class RepositoryScanner:
             tools=tuple(tools),
             identities=tuple(identities),
             identity_links=identity_links,
+            credential_flows=tuple(credential_flows),
+            privilege_findings=privilege_findings,
             agents=tuple(agents),
             exposure=exposure,
         )

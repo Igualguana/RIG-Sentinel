@@ -256,3 +256,80 @@ client = OpenAI()
     assert link.identity == "OPENAI_API_KEY"
     assert link.provider == "openai"
     assert link.confidence == "HIGH"
+def test_scanner_detects_excessive_privilege(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "agent.py"
+
+    source.write_text(
+        """
+import os
+from openai import OpenAI
+
+stripe_key = os.getenv("STRIPE_SECRET_KEY")
+
+client = OpenAI()
+
+stripe.refunds.create()
+""",
+        encoding="utf-8",
+    )
+
+    scanner = RepositoryScanner(tmp_path)
+
+    report = scanner.scan()
+
+    assert report.agent_count == 1
+    assert report.identity_count == 1
+    assert report.identity_link_count == 1
+    assert report.privilege_finding_count >= 1
+
+    findings = report.privilege_findings
+
+    critical = [
+        finding
+        for finding in findings
+        if finding.severity == "CRITICAL"
+    ]
+
+    assert len(critical) >= 1
+
+    finding = critical[0]
+
+    assert finding.agent == "agent"
+    assert finding.identity == "STRIPE_SECRET_KEY"
+    assert finding.capability == "financial_action"
+def test_scanner_detects_credential_flow(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "agent.py"
+
+    source.write_text(
+        """
+import os
+import stripe
+from openai import OpenAI
+
+stripe_key = os.getenv("STRIPE_SECRET_KEY")
+
+client = OpenAI()
+
+stripe.api_key = stripe_key
+stripe.refunds.create()
+""",
+        encoding="utf-8",
+    )
+
+    scanner = RepositoryScanner(tmp_path)
+
+    report = scanner.scan()
+
+    assert report.credential_flow_count == 1
+
+    flow = report.credential_flows[0]
+
+    assert flow.credential == "STRIPE_SECRET_KEY"
+    assert flow.variable == "stripe_key"
+    assert flow.provider == "stripe"
+    assert flow.capability == "financial_action"
+    assert flow.confidence == "HIGH"

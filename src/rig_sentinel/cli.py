@@ -63,6 +63,17 @@ def report_to_dict(report) -> dict:
             }
             for link in report.identity_links
         ],
+        "privilege_findings": [
+            {
+                "agent": finding.agent,
+                "identity": finding.identity,
+                "capability": finding.capability,
+                "severity": finding.severity,
+                "reason": finding.reason,
+                "recommendation": finding.recommendation,
+            }
+            for finding in report.privilege_findings
+        ],
         "agents": [
             {
                 "name": item.name,
@@ -221,17 +232,34 @@ def print_report(report) -> None:
                 provider = link.provider or "-"
 
                 print(f"  -> {link.identity}")
-                print(
-                    f"     Type: {link.identity_type}"
-                )
-                print(
-                    f"     Provider: {provider}"
-                )
+                print(f"     Type: {link.identity_type}")
+                print(f"     Provider: {provider}")
                 print(
                     f"     Link confidence: "
                     f"{link.confidence}"
                 )
 
+            print()
+
+    print("EXCESSIVE PRIVILEGE")
+    print("-" * 52)
+
+    if not report.privilege_findings:
+        print("No excessive privilege findings detected")
+    else:
+        for finding in sorted(
+            report.privilege_findings,
+            key=_privilege_sort_key,
+        ):
+            print(f"[{finding.severity}]")
+            print(f"Agent:      {finding.agent}")
+            print(f"Identity:   {finding.identity}")
+            print(f"Capability: {finding.capability}")
+            print(f"Reason:     {finding.reason}")
+            print(
+                f"Recommendation: "
+                f"{finding.recommendation}"
+            )
             print()
 
     print("AGENTS")
@@ -380,12 +408,16 @@ def print_report(report) -> None:
     print()
     print("SUMMARY")
     print("-" * 52)
-    print(f"Providers:        {report.provider_count}")
-    print(f"MCP findings:     {report.mcp_count}")
-    print(f"Tools:            {report.tool_count}")
-    print(f"Identities:       {report.identity_count}")
-    print(f"Identity links:   {report.identity_link_count}")
-    print(f"Agents:           {report.agent_count}")
+    print(f"Providers:          {report.provider_count}")
+    print(f"MCP findings:       {report.mcp_count}")
+    print(f"Tools:              {report.tool_count}")
+    print(f"Identities:         {report.identity_count}")
+    print(f"Identity links:     {report.identity_link_count}")
+    print(
+        f"Privilege findings: "
+        f"{report.privilege_finding_count}"
+    )
+    print(f"Agents:             {report.agent_count}")
 
 
 def _attack_path_sort_key(path) -> tuple[int, str]:
@@ -418,6 +450,26 @@ def _remediation_sort_key(
             99,
         ),
         recommendation.title,
+    )
+
+
+def _privilege_sort_key(
+    finding,
+) -> tuple[int, str, str]:
+    priority = {
+        "CRITICAL": 0,
+        "HIGH": 1,
+        "MEDIUM": 2,
+        "LOW": 3,
+    }
+
+    return (
+        priority.get(
+            finding.severity,
+            99,
+        ),
+        finding.agent,
+        finding.capability,
     )
 
 
