@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 import json
@@ -7,12 +8,17 @@ from pathlib import Path
 from rig_sentinel.scanner import RepositoryScanner
 
 
+# ============================================================
+# JSON REPORT
+# ============================================================
+
 def report_to_dict(report) -> dict:
     return {
         "product": "RIG Sentinel",
         "version": "0.1.0",
         "root": report.root,
         "files_scanned": report.files_scanned,
+
         "providers": [
             {
                 "provider": item.provider,
@@ -22,6 +28,7 @@ def report_to_dict(report) -> dict:
             }
             for item in report.providers
         ],
+
         "mcp_findings": [
             {
                 "kind": item.kind,
@@ -31,6 +38,7 @@ def report_to_dict(report) -> dict:
             }
             for item in report.mcp_findings
         ],
+
         "tools": [
             {
                 "name": item.name,
@@ -41,6 +49,7 @@ def report_to_dict(report) -> dict:
             }
             for item in report.tools
         ],
+
         "identities": [
             {
                 "name": item.name,
@@ -52,6 +61,7 @@ def report_to_dict(report) -> dict:
             }
             for item in report.identities
         ],
+
         "identity_links": [
             {
                 "agent": link.agent,
@@ -63,6 +73,7 @@ def report_to_dict(report) -> dict:
             }
             for link in report.identity_links
         ],
+
         "credential_flows": [
             {
                 "credential": flow.credential,
@@ -75,6 +86,7 @@ def report_to_dict(report) -> dict:
             }
             for flow in report.credential_flows
         ],
+
         "privilege_findings": [
             {
                 "agent": finding.agent,
@@ -86,6 +98,7 @@ def report_to_dict(report) -> dict:
             }
             for finding in report.privilege_findings
         ],
+
         "least_privilege_findings": [
             {
                 "identity": finding.identity,
@@ -100,6 +113,7 @@ def report_to_dict(report) -> dict:
             }
             for finding in report.least_privilege_findings
         ],
+
         "shared_credential_findings": [
             {
                 "identity": finding.identity,
@@ -111,6 +125,7 @@ def report_to_dict(report) -> dict:
             }
             for finding in report.shared_credential_findings
         ],
+
         "shadow_agent_findings": [
             {
                 "agent": finding.agent,
@@ -125,6 +140,41 @@ def report_to_dict(report) -> dict:
             }
             for finding in report.shadow_agent_findings
         ],
+
+        "multi_agent_graph": {
+            "node_count": report.multi_agent_node_count,
+            "edge_count": report.multi_agent_edge_count,
+            "shared_identity_count": (
+                report.shared_identity_relation_count
+            ),
+            "nodes": [
+                {
+                    "id": node.id,
+                    "kind": node.kind,
+                    "label": node.label,
+                }
+                for node in report.multi_agent_graph.nodes
+            ],
+            "edges": [
+                {
+                    "source": edge.source,
+                    "target": edge.target,
+                    "relation": edge.relation,
+                }
+                for edge in report.multi_agent_graph.edges
+            ],
+            "shared_identities": [
+                {
+                    "identity": relation.identity,
+                    "agents": list(relation.agents),
+                    "agent_count": relation.agent_count,
+                }
+                for relation in (
+                    report.multi_agent_graph.shared_identities
+                )
+            ],
+        },
+
         "agents": [
             {
                 "name": item.name,
@@ -136,6 +186,7 @@ def report_to_dict(report) -> dict:
             }
             for item in report.agents
         ],
+
         "exposure": {
             "agent_count": report.exposure.agent_count,
             "critical_agents": report.exposure.critical_agents,
@@ -188,12 +239,20 @@ def report_to_dict(report) -> dict:
     }
 
 
+# ============================================================
+# TERMINAL REPORT
+# ============================================================
+
 def print_report(report) -> None:
     print("RIG SENTINEL — Agent Exposure Management")
     print("=" * 52)
     print(f"Repository:       {report.root}")
     print(f"Files scanned:    {report.files_scanned}")
     print()
+
+    # --------------------------------------------------------
+    # AI PROVIDERS
+    # --------------------------------------------------------
 
     print("AI PROVIDERS")
     print("-" * 52)
@@ -209,6 +268,11 @@ def print_report(report) -> None:
             )
 
     print()
+
+    # --------------------------------------------------------
+    # MCP
+    # --------------------------------------------------------
+
     print("MCP")
     print("-" * 52)
 
@@ -223,6 +287,11 @@ def print_report(report) -> None:
             )
 
     print()
+
+    # --------------------------------------------------------
+    # TOOLS
+    # --------------------------------------------------------
+
     print("TOOLS / CAPABILITIES")
     print("-" * 52)
 
@@ -237,6 +306,11 @@ def print_report(report) -> None:
             )
 
     print()
+
+    # --------------------------------------------------------
+    # IDENTITIES
+    # --------------------------------------------------------
+
     print("IDENTITIES / CREDENTIAL REFERENCES")
     print("-" * 52)
 
@@ -254,6 +328,11 @@ def print_report(report) -> None:
             )
 
     print()
+
+    # --------------------------------------------------------
+    # AGENT IDENTITIES
+    # --------------------------------------------------------
+
     print("AGENT IDENTITIES")
     print("-" * 52)
 
@@ -292,6 +371,10 @@ def print_report(report) -> None:
 
             print()
 
+    # --------------------------------------------------------
+    # CREDENTIAL FLOWS
+    # --------------------------------------------------------
+
     print("CREDENTIAL FLOWS")
     print("-" * 52)
 
@@ -309,6 +392,10 @@ def print_report(report) -> None:
             print(f"Confidence:  {flow.confidence}")
             print(f"Evidence:    {flow.evidence}")
             print()
+
+    # --------------------------------------------------------
+    # EXCESSIVE PRIVILEGE
+    # --------------------------------------------------------
 
     print("EXCESSIVE PRIVILEGE")
     print("-" * 52)
@@ -330,6 +417,10 @@ def print_report(report) -> None:
                 f"{finding.recommendation}"
             )
             print()
+
+    # --------------------------------------------------------
+    # LEAST PRIVILEGE
+    # --------------------------------------------------------
 
     print("LEAST PRIVILEGE")
     print("-" * 52)
@@ -367,6 +458,10 @@ def print_report(report) -> None:
             )
             print()
 
+    # --------------------------------------------------------
+    # SHARED CREDENTIALS
+    # --------------------------------------------------------
+
     print("SHARED CREDENTIALS")
     print("-" * 52)
 
@@ -391,6 +486,10 @@ def print_report(report) -> None:
                 f"{finding.recommendation}"
             )
             print()
+
+    # --------------------------------------------------------
+    # SHADOW AGENTS
+    # --------------------------------------------------------
 
     print("SHADOW AGENTS")
     print("-" * 52)
@@ -422,6 +521,45 @@ def print_report(report) -> None:
             )
             print()
 
+    # --------------------------------------------------------
+    # MULTI-AGENT GRAPH
+    # --------------------------------------------------------
+
+    print("MULTI-AGENT GRAPH")
+    print("-" * 52)
+
+    print(
+        f"Nodes:              "
+        f"{report.multi_agent_node_count}"
+    )
+    print(
+        f"Edges:              "
+        f"{report.multi_agent_edge_count}"
+    )
+    print(
+        f"Shared identities:  "
+        f"{report.shared_identity_relation_count}"
+    )
+
+    if not report.multi_agent_graph.shared_identities:
+        print("No shared identity relationships detected")
+    else:
+        for relation in (
+            report.multi_agent_graph.shared_identities
+        ):
+            print()
+            print(f"Identity: {relation.identity}")
+            print("Connected agents:")
+
+            for agent in relation.agents:
+                print(f"  - {agent}")
+
+    print()
+
+    # --------------------------------------------------------
+    # AGENTS
+    # --------------------------------------------------------
+
     print("AGENTS")
     print("-" * 52)
 
@@ -448,6 +586,10 @@ def print_report(report) -> None:
                     print(f"  - {tool}")
 
             print()
+
+    # --------------------------------------------------------
+    # EXPOSURE
+    # --------------------------------------------------------
 
     print("EXPOSURE")
     print("-" * 52)
@@ -542,8 +684,13 @@ def print_report(report) -> None:
                     )
                     print()
 
+    # --------------------------------------------------------
+    # EXPOSURE SUMMARY
+    # --------------------------------------------------------
+
     print("EXPOSURE SUMMARY")
     print("-" * 52)
+
     print(
         f"Critical agents:  "
         f"{report.exposure.critical_agents}"
@@ -566,21 +713,28 @@ def print_report(report) -> None:
     )
 
     print()
+
+    # --------------------------------------------------------
+    # SUMMARY
+    # --------------------------------------------------------
+
     print("SUMMARY")
     print("-" * 52)
+
     print(f"Providers:               {report.provider_count}")
     print(f"MCP findings:            {report.mcp_count}")
     print(f"Tools:                   {report.tool_count}")
     print(f"Identities:              {report.identity_count}")
     print(f"Identity links:          {report.identity_link_count}")
     print(f"Credential flows:        {report.credential_flow_count}")
+
     print(
         f"Privilege findings:      "
         f"{report.privilege_finding_count}"
     )
     print(
-        f"Least privilege findings:"
-        f" {report.least_privilege_finding_count}"
+        f"Least privilege findings: "
+        f"{report.least_privilege_finding_count}"
     )
     print(
         f"Shared credentials:      "
@@ -590,10 +744,26 @@ def print_report(report) -> None:
         f"Shadow agents:           "
         f"{report.shadow_agent_finding_count}"
     )
+    print(
+        f"Graph nodes:             "
+        f"{report.multi_agent_node_count}"
+    )
+    print(
+        f"Graph edges:             "
+        f"{report.multi_agent_edge_count}"
+    )
+    print(
+        f"Shared identity relations: "
+        f"{report.shared_identity_relation_count}"
+    )
     print(f"Agents:                  {report.agent_count}")
 
 
-def _attack_path_sort_key(path) -> tuple[int, str]:
+# ============================================================
+# SORTING HELPERS
+# ============================================================
+
+def _severity_rank(severity: str) -> int:
     priority = {
         "CRITICAL": 0,
         "HIGH": 1,
@@ -601,107 +771,55 @@ def _attack_path_sort_key(path) -> tuple[int, str]:
         "LOW": 3,
     }
 
+    return priority.get(severity, 99)
+
+
+def _attack_path_sort_key(path) -> tuple[int, str]:
     return (
-        priority.get(path.risk, 99),
+        _severity_rank(path.risk),
         path.target,
     )
 
 
-def _remediation_sort_key(
-    recommendation,
-) -> tuple[int, str]:
-    priority = {
-        "CRITICAL": 0,
-        "HIGH": 1,
-        "MEDIUM": 2,
-        "LOW": 3,
-    }
-
+def _remediation_sort_key(recommendation) -> tuple[int, str]:
     return (
-        priority.get(
-            recommendation.priority,
-            99,
-        ),
+        _severity_rank(recommendation.priority),
         recommendation.title,
     )
 
 
-def _privilege_sort_key(
-    finding,
-) -> tuple[int, str, str]:
-    priority = {
-        "CRITICAL": 0,
-        "HIGH": 1,
-        "MEDIUM": 2,
-        "LOW": 3,
-    }
-
+def _privilege_sort_key(finding) -> tuple[int, str, str]:
     return (
-        priority.get(
-            finding.severity,
-            99,
-        ),
+        _severity_rank(finding.severity),
         finding.agent,
         finding.capability,
     )
 
 
-def _least_privilege_sort_key(
-    finding,
-) -> tuple[int, str]:
-    priority = {
-        "CRITICAL": 0,
-        "HIGH": 1,
-        "MEDIUM": 2,
-        "LOW": 3,
-    }
-
+def _least_privilege_sort_key(finding) -> tuple[int, str]:
     return (
-        priority.get(
-            finding.severity,
-            99,
-        ),
+        _severity_rank(finding.severity),
         finding.identity,
     )
 
 
-def _shared_credential_sort_key(
-    finding,
-) -> tuple[int, str]:
-    priority = {
-        "CRITICAL": 0,
-        "HIGH": 1,
-        "MEDIUM": 2,
-        "LOW": 3,
-    }
-
+def _shared_credential_sort_key(finding) -> tuple[int, str]:
     return (
-        priority.get(
-            finding.severity,
-            99,
-        ),
+        _severity_rank(finding.severity),
         finding.identity,
     )
 
 
-def _shadow_agent_sort_key(
-    finding,
-) -> tuple[int, str]:
-    priority = {
-        "CRITICAL": 0,
-        "HIGH": 1,
-        "MEDIUM": 2,
-        "LOW": 3,
-    }
-
+def _shadow_agent_sort_key(finding) -> tuple[int, str]:
     return (
-        priority.get(
-            finding.severity,
-            99,
-        ),
+        _severity_rank(finding.severity),
         finding.agent,
     )
 
+
+# ============================================================
+# CLI ENTRY POINT
+# ============================================================
 
 def main() -> None:
     args = sys.argv[1:]

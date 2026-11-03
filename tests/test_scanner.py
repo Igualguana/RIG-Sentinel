@@ -466,3 +466,36 @@ approved_agents = [
     assert finding.sensitive_capabilities == (
         "http_request",
     )
+    
+def test_scanner_builds_multi_agent_graph(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "agent_a.py"
+    second = tmp_path / "agent_b.py"
+
+    source = """
+import os
+from openai import OpenAI
+
+key = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=key)
+"""
+
+    first.write_text(source, encoding="utf-8")
+    second.write_text(source, encoding="utf-8")
+
+    scanner = RepositoryScanner(tmp_path)
+    report = scanner.scan()
+
+    assert report.agent_count == 2
+    assert report.multi_agent_node_count == 3
+    assert report.multi_agent_edge_count == 2
+    assert report.shared_identity_relation_count == 1
+
+    relation = report.multi_agent_graph.shared_identities[0]
+
+    assert relation.identity == "OPENAI_API_KEY"
+    assert relation.agents == (
+        "agent_a",
+        "agent_b",
+    )
