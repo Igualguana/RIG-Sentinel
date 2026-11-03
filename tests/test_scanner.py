@@ -256,7 +256,7 @@ client = OpenAI()
     assert link.identity == "OPENAI_API_KEY"
     assert link.provider == "openai"
     assert link.confidence == "HIGH"
-def test_scanner_detects_excessive_privilege(
+def test_scanner_does_not_infer_unbound_stripe_privilege(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "agent.py"
@@ -276,29 +276,27 @@ stripe.refunds.create()
     )
 
     scanner = RepositoryScanner(tmp_path)
-
     report = scanner.scan()
 
     assert report.agent_count == 1
     assert report.identity_count == 1
     assert report.identity_link_count == 1
-    assert report.privilege_finding_count >= 1
 
-    findings = report.privilege_findings
-
-    critical = [
-        finding
-        for finding in findings
-        if finding.severity == "CRITICAL"
+    stripe_flows = [
+        flow
+        for flow in report.credential_flows
+        if flow.credential == "STRIPE_SECRET_KEY"
     ]
+    assert len(stripe_flows) == 1
+    assert stripe_flows[0].capability != "financial_action"
 
-    assert len(critical) >= 1
+    assert not any(
+        finding.identity == "STRIPE_SECRET_KEY"
+        and finding.capability == "financial_action"
+        for finding in report.privilege_findings
+    )
 
-    finding = critical[0]
 
-    assert finding.agent == "agent"
-    assert finding.identity == "STRIPE_SECRET_KEY"
-    assert finding.capability == "financial_action"
 def test_scanner_detects_credential_flow(
     tmp_path: Path,
 ) -> None:

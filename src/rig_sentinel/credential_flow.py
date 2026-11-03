@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 import ast
@@ -17,31 +18,120 @@ class CredentialFlowFinding:
 
 
 class CredentialFlowAnalyzer:
+    """
+    RIG Sentinel - Credential Flow Analysis v2.
+
+    Detects:
+    - Credential references loaded from environment variables.
+    - Variables receiving credential references.
+    - Known provider authentication bindings.
+    - Provider capabilities associated with those bindings.
+
+    Security notes:
+    - Uses static AST analysis.
+    - Does not execute scanned source code.
+    - Does not retrieve credential values.
+    - Does not prove runtime permissions or actual execution.
+    """
+
+    SUPPORTED_CREDENTIALS = {
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "STRIPE_SECRET_KEY",
+        "STRIPE_API_KEY",
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "AZURE_CLIENT_SECRET",
+        "DATABASE_URL",
+        "DB_PASSWORD",
+    }
+
+    STRIPE_FINANCIAL_CALLS = {
+        "stripe.refunds.create",
+        "stripe.transfers.create",
+        "stripe.PaymentIntent.create",
+        "stripe.payment_intents.create",
+    }
+
+    OPENAI_CLIENT_CALLS = {
+        "OpenAI",
+        "openai.OpenAI",
+        "openai.Client",
+    }
+
+    GITHUB_CLIENT_CALLS = {
+        "Github",
+        "github.Github",
+    }
+
+    AWS_CLIENT_CALLS = {
+        "boto3.client",
+        "boto3.resource",
+    }
+
     def analyze(
         self,
         path: Path,
-        relative_path: Path,
+        relative_path: str | Path,
         text: str,
     ) -> tuple[CredentialFlowFinding, ...]:
+        """
+        Analyze a Python file for credential flows.
+
+        The relative path is normalized to str to ensure
+        compatibility with IdentityLinker and PrivilegeAnalyzer.
+        """
+
         if path.suffix.lower() != ".py":
             return ()
 
         try:
             tree = ast.parse(text)
-        except SyntaxError:
+        except (SyntaxError, ValueError):
             return ()
 
-        credential_variables = self._find_credential_variables(tree)
+        credential_variables = (
+            self._find_credential_variables(tree)
+        )
+
         findings: list[CredentialFlowFinding] = []
 
-        for credential, variable in credential_variables.items():
-            provider = self._provider_for_credential(credential)
+        normalized_file = str(relative_path)
+
+        for credential, variable in credential_variables:
+            provider = self._provider_for_credential(
+                credential
+            )
 
             capability = self._find_capability_for_variable(
-                tree,
-                variable,
-                provider,
+                tree=tree,
+                variable=variable,
+                provider=provider,
             )
+
+            confidence = (
+                "HIGH"
+                if capability is not None
+                and capability != "credential_usage"
+                else "MEDIUM"
+            )
+
+            evidence = (
+                f"{credential} assigned to variable "
+                f"{variable}"
+            )
+
+            if capability is not None:
+                evidence += (
+                    f"; inferred capability: {capability}"
+                )
+            else:
+                evidence += (
+                    "; no supported capability binding found"
+                )
 
             findings.append(
                 CredentialFlowFinding(
@@ -49,53 +139,76 @@ class CredentialFlowAnalyzer:
                     variable=variable,
                     provider=provider,
                     capability=capability,
-                    file=str(relative_path),
-                    confidence=(
-                        "HIGH"
-                        if capability is not None
-                        else "MEDIUM"
-                    ),
-                    evidence=self._build_evidence(
-                        credential,
-                        variable,
-                        capability,
-                    ),
+                    file=normalized_file,
+                    confidence=confidence,
+                    evidence=evidence,
                 )
             )
 
-        return tuple(findings)
+        return tuple(
+            sorted(
+                set(findings),
+                key=lambda item: (
+                    item.file,
+                    item.credential,
+                    item.variable,
+                ),
+            )
+        )
+
+    # ========================================================
+    # CREDENTIAL VARIABLE DISCOVERY
+    # ========================================================
 
     def _find_credential_variables(
         self,
         tree: ast.AST,
-    ) -> dict[str, str]:
-        result: dict[str, str] = {}
+    ) -> tuple[tuple[str, str], ...]:
+
+        results: set[tuple[str, str]] = set()
 
         for node in ast.walk(tree):
-            if not isinstance(node, ast.Assign):
-                continue
 
-            if len(node.targets) != 1:
-                continue
+            if isinstance(node, ast.Assign):
+                credential = self._credential_from_call(
+                    node.value
+                )
 
-            target = node.targets[0]
+                if credential is None:
+                    continue
 
-            if not isinstance(target, ast.Name):
-                continue
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        results.add(
+                            (
+                                credential,
+                                target.id,
+                            )
+                        )
 
-            credential = self._credential_from_call(node.value)
+            elif isinstance(node, ast.AnnAssign):
+                credential = self._credential_from_call(
+                    node.value
+                )
 
-            if credential is None:
-                continue
+                if (
+                    credential is not None
+                    and isinstance(node.target, ast.Name)
+                ):
+                    results.add(
+                        (
+                            credential,
+                            node.target.id,
+                        )
+                    )
 
-            result[credential] = target.id
-
-        return result
+        return tuple(sorted(results))
 
     def _credential_from_call(
         self,
-        node: ast.AST,
+        node: ast.AST | None,
     ) -> str | None:
+
         if not isinstance(node, ast.Call):
             return None
 
@@ -104,26 +217,37 @@ class CredentialFlowAnalyzer:
         if call_name not in {
             "os.getenv",
             "getenv",
+            "os.environ.get",
         }:
             return None
 
         if not node.args:
             return None
 
-        first_arg = node.args[0]
+        first_argument = node.args[0]
 
-        if not isinstance(first_arg, ast.Constant):
+        if not isinstance(
+            first_argument,
+            ast.Constant,
+        ):
             return None
 
-        if not isinstance(first_arg.value, str):
+        if not isinstance(
+            first_argument.value,
+            str,
+        ):
             return None
 
-        credential = first_arg.value.upper()
+        credential = first_argument.value
 
-        if not self._is_supported_credential(credential):
+        if credential not in self.SUPPORTED_CREDENTIALS:
             return None
 
         return credential
+
+    # ========================================================
+    # CAPABILITY DETECTION
+    # ========================================================
 
     def _find_capability_for_variable(
         self,
@@ -131,94 +255,220 @@ class CredentialFlowAnalyzer:
         variable: str,
         provider: str | None,
     ) -> str | None:
+
         if provider == "stripe":
-            if self._tree_has_call(
+
+            if self._stripe_credential_is_bound(
                 tree,
-                {
-                    "stripe.refunds.create",
-                    "stripe.transfers.create",
-                    "stripe.PaymentIntent.create",
-                    "stripe.payment_intents.create",
-                },
+                variable,
             ):
-                return "financial_action"
+                if self._tree_has_call(
+                    tree,
+                    self.STRIPE_FINANCIAL_CALLS,
+                ):
+                    return "financial_action"
 
         if provider == "openai":
-            if self._tree_has_call(
-                tree,
-                {
-                    "OpenAI",
-                    "openai.OpenAI",
-                    "openai.Client",
-                },
+
+            if self._client_uses_variable(
+                tree=tree,
+                variable=variable,
+                client_calls=self.OPENAI_CLIENT_CALLS,
+                allowed_keywords={"api_key"},
+                allow_positional=False,
             ):
                 return "ai_provider_access"
 
         if provider == "github":
-            if self._tree_has_call(
-                tree,
-                {
-                    "Github",
-                    "github.Github",
+
+            if self._client_uses_variable(
+                tree=tree,
+                variable=variable,
+                client_calls=self.GITHUB_CLIENT_CALLS,
+                allowed_keywords={
+                    "login_or_token",
+                    "token",
+                    "auth",
                 },
+                allow_positional=True,
             ):
                 return "repository_access"
 
         if provider == "aws":
-            if self._tree_has_call(
-                tree,
-                {
-                    "boto3.client",
-                    "boto3.resource",
+
+            if self._client_uses_variable(
+                tree=tree,
+                variable=variable,
+                client_calls=self.AWS_CLIENT_CALLS,
+                allowed_keywords={
+                    "aws_access_key_id",
+                    "aws_secret_access_key",
+                    "aws_session_token",
                 },
+                allow_positional=False,
             ):
                 return "cloud_access"
 
-        if self._variable_is_used(tree, variable):
+        if self._variable_is_used(
+            tree,
+            variable,
+        ):
             return "credential_usage"
 
         return None
 
-    def _tree_has_call(
+    # ========================================================
+    # STRIPE AUTHENTICATION BINDING
+    # ========================================================
+
+    def _stripe_credential_is_bound(
         self,
         tree: ast.AST,
-        candidates: set[str],
+        variable: str,
     ) -> bool:
+
         for node in ast.walk(tree):
+
+            if isinstance(node, ast.Assign):
+
+                if not self._is_variable(
+                    node.value,
+                    variable,
+                ):
+                    continue
+
+                for target in node.targets:
+                    if self._call_name(target) == (
+                        "stripe.api_key"
+                    ):
+                        return True
+
+            elif isinstance(node, ast.AnnAssign):
+
+                if (
+                    self._is_variable(
+                        node.value,
+                        variable,
+                    )
+                    and self._call_name(
+                        node.target
+                    ) == "stripe.api_key"
+                ):
+                    return True
+
+        return False
+
+    # ========================================================
+    # CLIENT AUTHENTICATION BINDING
+    # ========================================================
+
+    def _client_uses_variable(
+        self,
+        tree: ast.AST,
+        variable: str,
+        client_calls: set[str],
+        allowed_keywords: set[str],
+        allow_positional: bool,
+    ) -> bool:
+
+        for node in ast.walk(tree):
+
             if not isinstance(node, ast.Call):
                 continue
 
             call_name = self._call_name(node.func)
 
-            if call_name in candidates:
+            if call_name not in client_calls:
+                continue
+
+            for keyword in node.keywords:
+
+                if keyword.arg not in allowed_keywords:
+                    continue
+
+                if self._is_variable(
+                    keyword.value,
+                    variable,
+                ):
+                    return True
+
+            if allow_positional:
+
+                for argument in node.args:
+
+                    if self._is_variable(
+                        argument,
+                        variable,
+                    ):
+                        return True
+
+        return False
+
+    # ========================================================
+    # AST HELPERS
+    # ========================================================
+
+    @staticmethod
+    def _is_variable(
+        node: ast.AST | None,
+        variable: str,
+    ) -> bool:
+
+        return (
+            isinstance(node, ast.Name)
+            and node.id == variable
+            and isinstance(node.ctx, ast.Load)
+        )
+
+    def _tree_has_call(
+        self,
+        tree: ast.AST,
+        call_names: set[str],
+    ) -> bool:
+
+        for node in ast.walk(tree):
+
+            if not isinstance(node, ast.Call):
+                continue
+
+            name = self._call_name(node.func)
+
+            if name in call_names:
                 return True
 
         return False
 
+    @staticmethod
     def _variable_is_used(
-        self,
         tree: ast.AST,
         variable: str,
     ) -> bool:
-        usage_count = 0
 
         for node in ast.walk(tree):
-            if isinstance(node, ast.Name):
-                if node.id == variable:
-                    usage_count += 1
 
-        # One occurrence is normally the assignment target itself.
-        return usage_count > 1
+            if not isinstance(node, ast.Name):
+                continue
 
+            if (
+                node.id == variable
+                and isinstance(node.ctx, ast.Load)
+            ):
+                return True
+
+        return False
+
+    @staticmethod
     def _call_name(
-        self,
         node: ast.AST,
     ) -> str:
+
         if isinstance(node, ast.Name):
             return node.id
 
         if isinstance(node, ast.Attribute):
-            parent = self._call_name(node.value)
+            parent = CredentialFlowAnalyzer._call_name(
+                node.value
+            )
 
             if parent:
                 return f"{parent}.{node.attr}"
@@ -227,11 +477,16 @@ class CredentialFlowAnalyzer:
 
         return ""
 
+    # ========================================================
+    # PROVIDER RESOLUTION
+    # ========================================================
+
+    @staticmethod
     def _provider_for_credential(
-        self,
         credential: str,
     ) -> str | None:
-        mapping = {
+
+        providers = {
             "OPENAI_API_KEY": "openai",
             "ANTHROPIC_API_KEY": "anthropic",
             "STRIPE_SECRET_KEY": "stripe",
@@ -242,45 +497,6 @@ class CredentialFlowAnalyzer:
             "AWS_SECRET_ACCESS_KEY": "aws",
             "GOOGLE_APPLICATION_CREDENTIALS": "google",
             "AZURE_CLIENT_SECRET": "azure",
-            "DATABASE_URL": None,
-            "DB_PASSWORD": None,
         }
 
-        return mapping.get(credential)
-
-    def _is_supported_credential(
-        self,
-        credential: str,
-    ) -> bool:
-        return credential in {
-            "OPENAI_API_KEY",
-            "ANTHROPIC_API_KEY",
-            "STRIPE_SECRET_KEY",
-            "STRIPE_API_KEY",
-            "GITHUB_TOKEN",
-            "GH_TOKEN",
-            "AWS_ACCESS_KEY_ID",
-            "AWS_SECRET_ACCESS_KEY",
-            "GOOGLE_APPLICATION_CREDENTIALS",
-            "AZURE_CLIENT_SECRET",
-            "DATABASE_URL",
-            "DB_PASSWORD",
-        }
-
-    def _build_evidence(
-        self,
-        credential: str,
-        variable: str,
-        capability: str | None,
-    ) -> str:
-        if capability is None:
-            return (
-                f"{credential} assigned to variable "
-                f"{variable}"
-            )
-
-        return (
-            f"{credential} assigned to variable "
-            f"{variable}; inferred capability: "
-            f"{capability}"
-        )
+        return providers.get(credential)

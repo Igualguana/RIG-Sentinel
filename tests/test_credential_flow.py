@@ -114,3 +114,34 @@ def test_invalid_python_returns_no_findings() -> None:
     )
 
     assert findings == ()
+
+def test_stripe_credential_without_binding_is_not_financial_flow(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "agent.py"
+
+    text = """
+import os
+import stripe
+
+stripe_key = os.getenv("STRIPE_SECRET_KEY")
+
+# The credential is loaded, but never assigned
+# to the Stripe client.
+stripe.refunds.create()
+"""
+
+    analyzer = CredentialFlowAnalyzer()
+
+    findings = analyzer.analyze(
+        source,
+        "agent.py",
+        text,
+    )
+
+    assert len(findings) == 1
+
+    finding = findings[0]
+
+    assert finding.credential == "STRIPE_SECRET_KEY"
+    assert finding.capability != "financial_action"
