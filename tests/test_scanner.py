@@ -499,3 +499,35 @@ client = OpenAI(api_key=key)
         "agent_a",
         "agent_b",
     )
+
+def test_scanner_builds_risk_propagation_findings(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "agent_a.py"
+    second = tmp_path / "agent_b.py"
+
+    source = """
+import os
+from openai import OpenAI
+
+key = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=key)
+"""
+
+    first.write_text(source, encoding="utf-8")
+    second.write_text(source, encoding="utf-8")
+
+    scanner = RepositoryScanner(tmp_path)
+    report = scanner.scan()
+
+    assert report.agent_count == 2
+    assert report.shared_identity_relation_count == 1
+    assert report.risk_propagation_finding_count == 1
+
+    finding = report.risk_propagation_findings[0]
+
+    assert finding.source_agent == "agent_a"
+    assert finding.related_agent == "agent_b"
+    assert finding.shared_identity == "OPENAI_API_KEY"
+    assert finding.classification == "SHARED_IDENTITY_REFERENCE"
+    assert finding.confirmed_lateral_movement is False

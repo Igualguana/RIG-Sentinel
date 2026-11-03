@@ -40,6 +40,10 @@ from rig_sentinel.providers import (
     ProviderFinding,
 )
 from rig_sentinel.repository import RepositoryWalker
+from rig_sentinel.risk_propagation import (
+    RiskPropagationAnalyzer,
+    RiskPropagationFinding,
+)
 from rig_sentinel.shadow_agents import (
     ShadowAgentAnalyzer,
     ShadowAgentFinding,
@@ -66,16 +70,17 @@ class ScanReport:
 
     privilege_findings: tuple[PrivilegeFinding, ...]
     least_privilege_findings: tuple[LeastPrivilegeFinding, ...]
-
     shared_credential_findings: tuple[
         SharedCredentialFinding, ...
     ]
-
     shadow_agent_findings: tuple[
         ShadowAgentFinding, ...
     ]
 
     multi_agent_graph: MultiAgentGraphResult
+    risk_propagation_findings: tuple[
+        RiskPropagationFinding, ...
+    ]
 
     agents: tuple[AgentFinding, ...]
     exposure: ExposureReport
@@ -133,13 +138,17 @@ class ScanReport:
         return self.multi_agent_graph.shared_identity_count
 
     @property
+    def risk_propagation_finding_count(self) -> int:
+        return len(self.risk_propagation_findings)
+
+    @property
     def agent_count(self) -> int:
         return len(self.agents)
 
 
 class RepositoryScanner:
     def __init__(self, root: Path) -> None:
-        self.root = root.resolve()
+        self.root = Path(root).resolve()
 
         # Repository and configuration
         self.walker = RepositoryWalker(self.root)
@@ -156,14 +165,17 @@ class RepositoryScanner:
         self.identity_linker = IdentityLinker()
         self.credential_flow_analyzer = CredentialFlowAnalyzer()
 
-        # Privilege and risk analysis
+        # Privilege analysis
         self.privilege_analyzer = PrivilegeAnalyzer()
         self.least_privilege_analyzer = LeastPrivilegeAnalyzer()
+
+        # Shared credentials and shadow agents
         self.shared_credential_analyzer = SharedCredentialAnalyzer()
         self.shadow_agent_analyzer = ShadowAgentAnalyzer()
 
-        # Multi-agent graph
+        # Multi-agent intelligence
         self.multi_agent_graph_builder = MultiAgentGraphBuilder()
+        self.risk_propagation_analyzer = RiskPropagationAnalyzer()
 
         # Exposure analysis
         self.exposure_builder = ExposureReportBuilder()
@@ -236,7 +248,7 @@ class RepositoryScanner:
             )
 
         # --------------------------------------------------
-        # 2. Deduplicate discovery results
+        # 2. Deduplicate findings
         # --------------------------------------------------
 
         providers = self._unique(providers)
@@ -272,7 +284,7 @@ class RepositoryScanner:
         agents_tuple = tuple(agents)
 
         # --------------------------------------------------
-        # 4. Approved inventory
+        # 4. Approved agent inventory
         # --------------------------------------------------
 
         config = self.config_loader.load(self.root)
@@ -289,7 +301,7 @@ class RepositoryScanner:
         credential_flows_tuple = tuple(credential_flows)
 
         # --------------------------------------------------
-        # 6. Credential and privilege analysis
+        # 6. Excessive privilege analysis
         # --------------------------------------------------
 
         privilege_findings = self.privilege_analyzer.analyze(
@@ -297,6 +309,10 @@ class RepositoryScanner:
             identity_links,
             credential_flows_tuple,
         )
+
+        # --------------------------------------------------
+        # 7. Least privilege analysis
+        # --------------------------------------------------
 
         least_privilege_findings = (
             self.least_privilege_analyzer.analyze(
@@ -306,7 +322,7 @@ class RepositoryScanner:
         )
 
         # --------------------------------------------------
-        # 7. Shared credentials
+        # 8. Shared credential detection
         # --------------------------------------------------
 
         shared_credential_findings = (
@@ -316,7 +332,7 @@ class RepositoryScanner:
         )
 
         # --------------------------------------------------
-        # 8. Shadow agent detection
+        # 9. Shadow agent detection
         # --------------------------------------------------
 
         shadow_agent_findings = (
@@ -327,7 +343,7 @@ class RepositoryScanner:
         )
 
         # --------------------------------------------------
-        # 9. Multi-Agent Graph
+        # 10. Multi-Agent Graph
         # --------------------------------------------------
 
         multi_agent_graph = (
@@ -338,7 +354,17 @@ class RepositoryScanner:
         )
 
         # --------------------------------------------------
-        # 10. Exposure analysis
+        # 11. Risk Propagation Analysis
+        # --------------------------------------------------
+
+        risk_propagation_findings = (
+            self.risk_propagation_analyzer.analyze(
+                multi_agent_graph,
+            )
+        )
+
+        # --------------------------------------------------
+        # 12. Exposure Analysis
         # --------------------------------------------------
 
         exposure = self.exposure_builder.build(
@@ -346,7 +372,7 @@ class RepositoryScanner:
         )
 
         # --------------------------------------------------
-        # 11. Final report
+        # 13. Final Scan Report
         # --------------------------------------------------
 
         return ScanReport(
@@ -363,6 +389,7 @@ class RepositoryScanner:
             shared_credential_findings=shared_credential_findings,
             shadow_agent_findings=shadow_agent_findings,
             multi_agent_graph=multi_agent_graph,
+            risk_propagation_findings=risk_propagation_findings,
             agents=agents_tuple,
             exposure=exposure,
         )

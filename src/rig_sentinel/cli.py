@@ -175,6 +175,20 @@ def report_to_dict(report) -> dict:
             ],
         },
 
+        "risk_propagation_findings": [
+            {
+                "source_agent": finding.source_agent,
+                "related_agent": finding.related_agent,
+                "shared_identity": finding.shared_identity,
+                "classification": finding.classification,
+                "confirmed_lateral_movement": (
+                    finding.confirmed_lateral_movement
+                ),
+                "recommendation": finding.recommendation,
+            }
+            for finding in report.risk_propagation_findings
+        ],
+
         "agents": [
             {
                 "name": item.name,
@@ -289,7 +303,7 @@ def print_report(report) -> None:
     print()
 
     # --------------------------------------------------------
-    # TOOLS
+    # TOOLS / CAPABILITIES
     # --------------------------------------------------------
 
     print("TOOLS / CAPABILITIES")
@@ -557,6 +571,33 @@ def print_report(report) -> None:
     print()
 
     # --------------------------------------------------------
+    # RISK PROPAGATION ANALYSIS
+    # --------------------------------------------------------
+
+    print("RISK PROPAGATION")
+    print("-" * 52)
+
+    if not report.risk_propagation_findings:
+        print("No shared exposure relationships detected")
+    else:
+        for finding in report.risk_propagation_findings:
+            print(f"Classification: {finding.classification}")
+            print(f"Source agent: {finding.source_agent}")
+            print(f"Related agent: {finding.related_agent}")
+            print(f"Shared identity: {finding.shared_identity}")
+            print(
+                f"Confirmed lateral movement: "
+                f"{'Yes' if finding.confirmed_lateral_movement else 'No'}"
+            )
+            print(
+                f"Recommendation: "
+                f"{finding.recommendation}"
+            )
+            print()
+
+    print()
+
+    # --------------------------------------------------------
     # AGENTS
     # --------------------------------------------------------
 
@@ -755,6 +796,10 @@ def print_report(report) -> None:
     print(
         f"Shared identity relations: "
         f"{report.shared_identity_relation_count}"
+    )
+    print(
+        f"Risk propagation findings: "
+        f"{report.risk_propagation_finding_count}"
     )
     print(f"Agents:                  {report.agent_count}")
 
