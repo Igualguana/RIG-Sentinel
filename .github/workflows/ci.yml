@@ -15,7 +15,7 @@ jobs:
   test-and-scan:
     name: Python 3.13 / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     strategy:
       fail-fast: false
@@ -24,6 +24,7 @@ jobs:
           - ubuntu-24.04
           - ubuntu-26.04
           - macos-latest
+          - macos-15-intel
 
     steps:
       - name: Check out source
@@ -31,24 +32,29 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Python
+      - name: Set up Python 3.13
         uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 
-      - name: Show operating system and Python
+      - name: Show system information
         shell: bash
         run: |
+          echo "Operating system:"
           uname -a
+          echo "Architecture:"
+          uname -m
+          echo "Python:"
           python --version
+          echo "Pip:"
           python -m pip --version
 
-      - name: Install package and development tools
+      - name: Install RIG Sentinel and development dependencies
         shell: bash
         run: |
           python -m pip install -e ".[dev]"
 
-      - name: Run tests
+      - name: Run all automated tests
         shell: bash
         run: |
           python -m pytest -q
@@ -58,24 +64,24 @@ jobs:
         run: |
           rig-sentinel --help
 
-      - name: Generate HTML report
+      - name: Generate HTML security report
         shell: bash
         run: |
           rig-sentinel scan . --html rig-sentinel.html
           test -s rig-sentinel.html
 
-      - name: Generate SARIF report
+      - name: Generate SARIF security report
         shell: bash
         run: |
           rig-sentinel scan . --sarif rig-sentinel.sarif
           test -s rig-sentinel.sarif
 
-      - name: Validate SARIF format
+      - name: Validate SARIF 2.1.0
         shell: bash
         run: |
-          python -c "import json; from pathlib import Path; p=json.loads(Path('rig-sentinel.sarif').read_text()); assert p['version']=='2.1.0'; assert len(p['runs'])>=1; print('SARIF valid')"
+          python -c "import json; from pathlib import Path; p=json.loads(Path('rig-sentinel.sarif').read_text(encoding='utf-8')); assert p['version']=='2.1.0'; assert len(p['runs'])>=1; print('SARIF valid')"
 
-      - name: Upload security reports
+      - name: Upload HTML and SARIF reports
         uses: actions/upload-artifact@v6
         with:
           name: rig-sentinel-reports-${{ matrix.os }}
