@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 
+from rig_sentinel.html_report import HTMLReportGenerator
 from rig_sentinel.scanner import RepositoryScanner
 
 
@@ -915,45 +916,64 @@ def _shadow_agent_sort_key(finding) -> tuple[int, str]:
 
 def main() -> None:
     args = sys.argv[1:]
+    usage = "Usage: rig-sentinel scan <path> [--json | --html <output.html>]"
 
-    if not args or args[0] not in {
-        "scan",
-        "--help",
-        "-h",
-    }:
-        print(
-            "Usage: rig-sentinel scan "
-            "<path> [--json]"
-        )
-        raise SystemExit(2)
-
-    if args[0] in {
-        "--help",
-        "-h",
-    }:
-        print(
-            "Usage: rig-sentinel scan "
-            "<path> [--json]"
-        )
+    if args and args[0] in {"--help", "-h"}:
+        print(usage)
         return
 
-    target = Path(
-        args[1]
-        if len(args) > 1
-        and not args[1].startswith("--")
-        else "."
-    )
+    if not args or args[0] != "scan":
+        print(usage, file=sys.stderr)
+        raise SystemExit(2)
 
-    scanner = RepositoryScanner(target)
-    report = scanner.scan()
+    if "--help" in args or "-h" in args:
+        print(usage)
+        return
 
-    if "--json" in args:
-        print(
-            json.dumps(
-                report_to_dict(report),
-                indent=2,
-            )
+    output_html: Path | None = None
+    html_requested = "--html" in args
+    json_requested = "--json" in args
+
+    if html_requested and json_requested:
+        print("Error: --html and --json cannot be combined.", file=sys.stderr)
+        raise SystemExit(2)
+
+    if html_requested:
+        index = args.index("--html")
+        if index + 1 >= len(args) or args[index + 1].startswith("--"):
+            print("Error: --html requires an output filename.", file=sys.stderr)
+            raise SystemExit(2)
+        output_html = Path(args[index + 1])
+
+    positional = []
+    index = 1
+    while index < len(args):
+        argument = args[index]
+        if argument == "--json":
+            index += 1
+        elif argument == "--html":
+            index += 2
+        elif argument.startswith("--"):
+            print(f"Error: unknown option {argument}", file=sys.stderr)
+            raise SystemExit(2)
+        else:
+            positional.append(argument)
+            index += 1
+
+    if len(positional) > 1:
+        print("Error: expected at most one repository path.", file=sys.stderr)
+        raise SystemExit(2)
+
+    target = Path(positional[0]) if positional else Path(".")
+    report = RepositoryScanner(target).scan()
+
+    if output_html is not None:
+        destination = HTMLReportGenerator().write(
+            report_to_dict(report), output_html
         )
+        print(f"HTML report created: {destination}")
+    elif json_requested:
+        print(json.dumps(report_to_dict(report), indent=2))
     else:
         print_report(report)
 
