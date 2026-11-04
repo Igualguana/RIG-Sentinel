@@ -7,6 +7,7 @@ from pathlib import Path
 
 from rig_sentinel.html_report import HTMLReportGenerator
 from rig_sentinel.scanner import RepositoryScanner
+from rig_sentinel.sarif_report import SARIFReportGenerator
 
 
 # ============================================================
@@ -916,49 +917,50 @@ def _shadow_agent_sort_key(finding) -> tuple[int, str]:
 
 def main() -> None:
     args = sys.argv[1:]
-    usage = "Usage: rig-sentinel scan <path> [--json | --html <output.html>]"
+    usage = (
+        "Usage: rig-sentinel scan <path> "
+        "[--json | --html <output.html> | --sarif <output.sarif>]"
+    )
 
     if args and args[0] in {"--help", "-h"}:
         print(usage)
         return
-
     if not args or args[0] != "scan":
         print(usage, file=sys.stderr)
         raise SystemExit(2)
-
     if "--help" in args or "-h" in args:
         print(usage)
         return
 
-    output_html: Path | None = None
-    html_requested = "--html" in args
-    json_requested = "--json" in args
-
-    if html_requested and json_requested:
-        print("Error: --html and --json cannot be combined.", file=sys.stderr)
+    requested_modes = [flag for flag in ("--json", "--html", "--sarif") if flag in args]
+    if len(requested_modes) > 1:
+        print("Error: select only one output format.", file=sys.stderr)
         raise SystemExit(2)
 
-    if html_requested:
-        index = args.index("--html")
-        if index + 1 >= len(args) or args[index + 1].startswith("--"):
-            print("Error: --html requires an output filename.", file=sys.stderr)
-            raise SystemExit(2)
-        output_html = Path(args[index + 1])
-
-    positional = []
+    output_html: Path | None = None
+    output_sarif: Path | None = None
+    positional: list[str] = []
     index = 1
     while index < len(args):
-        argument = args[index]
-        if argument == "--json":
+        arg = args[index]
+        if arg == "--json":
             index += 1
-        elif argument == "--html":
+            continue
+        if arg in {"--html", "--sarif"}:
+            if index + 1 >= len(args) or args[index + 1].startswith("--"):
+                print(f"Error: {arg} requires an output filename.", file=sys.stderr)
+                raise SystemExit(2)
+            if arg == "--html":
+                output_html = Path(args[index + 1])
+            else:
+                output_sarif = Path(args[index + 1])
             index += 2
-        elif argument.startswith("--"):
-            print(f"Error: unknown option {argument}", file=sys.stderr)
+            continue
+        if arg.startswith("--"):
+            print(f"Error: unknown option {arg}", file=sys.stderr)
             raise SystemExit(2)
-        else:
-            positional.append(argument)
-            index += 1
+        positional.append(arg)
+        index += 1
 
     if len(positional) > 1:
         print("Error: expected at most one repository path.", file=sys.stderr)
@@ -966,14 +968,16 @@ def main() -> None:
 
     target = Path(positional[0]) if positional else Path(".")
     report = RepositoryScanner(target).scan()
+    payload = report_to_dict(report)
 
     if output_html is not None:
-        destination = HTMLReportGenerator().write(
-            report_to_dict(report), output_html
-        )
+        destination = HTMLReportGenerator().write(payload, output_html)
         print(f"HTML report created: {destination}")
-    elif json_requested:
-        print(json.dumps(report_to_dict(report), indent=2))
+    elif output_sarif is not None:
+        destination = SARIFReportGenerator().write(payload, output_sarif)
+        print(f"SARIF report created: {destination}")
+    elif "--json" in args:
+        print(json.dumps(payload, indent=2))
     else:
         print_report(report)
 
