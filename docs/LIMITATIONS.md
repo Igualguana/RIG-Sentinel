@@ -53,7 +53,7 @@ is claimed.
 
 ## SARIF
 
-- Output is valid SARIF 2.1.0.
+- **SARIF 2.1.0 works as an export format** and output is valid SARIF 2.1.0.
 - Results include a file location only when the path is relative and uses forward
   slashes. Scans on Windows produce results **without locations**, and some finding types
   never carry a location.
@@ -68,7 +68,7 @@ is claimed.
 | Windows, Python 3.13 | Validated (179 tests) |
 | Ubuntu 24.04 / 26.04, Python 3.13 | Validated in GitHub Actions |
 | macOS 15 Intel, Python 3.13 | Validated in GitHub Actions |
-| **macOS Apple Silicon (`macos-latest`)** | **Pending.** The CI job has not completed successfully yet: earlier runs were not picked up by a hosted runner, and the run for the release candidate commit was cancelled. No Apple Silicon-specific issue is known; the package is pure Python with no native dependencies. |
+| **macOS Apple Silicon (`macos-latest`)** | **Pending validation.** The CI job has not yet been assigned a GitHub-hosted runner (runner capacity), so no result exists yet. This is not a known code failure; the package is pure Python with no native dependencies. Apple Silicon runs in a separate workflow (`ci-macos-arm64.yml`) with its own status badge. |
 | Python 3.11 / 3.12 | Declared supported (`requires-python >= 3.11`) but not yet exercised in CI |
 
 ## CI behavior

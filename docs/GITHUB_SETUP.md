@@ -91,8 +91,9 @@ Q&A, Ideas, Show and tell. Point general questions there to keep Issues actionab
 
 - Require a pull request before merging (1 approval once there are other maintainers;
   0 while solo, but keep the PR requirement).
-- Require status checks: `Python 3.13 / ubuntu-24.04`, `Python 3.13 / ubuntu-26.04`
-  (add macOS jobs once they run reliably — `macos-latest` has had runner-capacity delays).
+- Require status checks: `Python 3.13 / ubuntu-24.04`, `Python 3.13 / ubuntu-26.04`,
+  `Python 3.13 / macos-15-intel`. Do **not** require the Apple Silicon workflow until it
+  runs reliably (`macos-latest` has had runner-capacity delays).
 - Require branches to be up to date before merging.
 - Require conversation resolution.
 - Block force pushes and deletions.

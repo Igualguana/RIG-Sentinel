@@ -7,7 +7,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.1.0] — Unreleased (release candidate)
+## [0.1.0] — 2026-11-04
 
 First public release of **RIG Sentinel Community**.
 
@@ -30,8 +30,9 @@ First public release of **RIG Sentinel Community**.
 - Multi-agent identity graph and risk propagation analysis.
 - Attack paths, blast radius (0–100 heuristic) and remediation recommendations.
 - Advisory security policy generator.
-- GitHub Actions CI on Ubuntu 24.04, Ubuntu 26.04 and macOS, generating HTML and SARIF
-  artifacts.
+- GitHub Actions CI on Ubuntu 24.04, Ubuntu 26.04 and macOS 15 Intel (179 tests passing on
+  each), generating HTML and SARIF artifacts; macOS Apple Silicon runs in a separate,
+  non-required workflow.
 - Apache License 2.0, NOTICE, Code of Conduct, contribution guide (code review rules,
   Apache-2.0 inbound=outbound contributions, no CLA), security policy with coordinated
   disclosure, issue and pull request templates, and documentation (installation, CLI
@@ -40,10 +41,12 @@ First public release of **RIG Sentinel Community**.
 
 ### Known limitations
 
-- SARIF results may lack file locations (always on Windows); GitHub code-scanning upload
-  is not verified.
+- SARIF 2.1.0 works as an export format, but integration with GitHub Code Scanning is not
+  yet validated: results may lack file locations (always on Windows).
 - Findings never change the exit code.
-- macOS Apple Silicon CI validation pending at the time of writing.
+- macOS Apple Silicon: validation pending — the CI job has not yet been assigned a GitHub
+  runner. This is not a known code failure.
+- Python 3.11 and 3.12 are declared supported but not yet exercised in CI.
 
 See [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
 

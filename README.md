@@ -5,6 +5,7 @@
 **Open-source security scanner for AI agents, MCP servers, identities, permissions, and exposure risks.**
 
 [![CI](https://github.com/Igualguana/RIG-Sentinel/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Igualguana/RIG-Sentinel/actions/workflows/ci.yml)
+[![macOS Apple Silicon](https://github.com/Igualguana/RIG-Sentinel/actions/workflows/ci-macos-arm64.yml/badge.svg?branch=main)](https://github.com/Igualguana/RIG-Sentinel/actions/workflows/ci-macos-arm64.yml)
 [![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 [![Version](https://img.shields.io/badge/version-0.1.0-informational)](CHANGELOG.md)
@@ -269,7 +270,7 @@ code execution. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 | Ubuntu 24.04 (Python 3.13) | ✅ GitHub Actions |
 | Ubuntu 26.04 (Python 3.13) | ✅ GitHub Actions |
 | macOS 15 Intel (Python 3.13) | ✅ GitHub Actions |
-| macOS Apple Silicon (`macos-latest`) | ⏳ Pending — CI job has not yet completed successfully |
+| macOS Apple Silicon (`macos-latest`) | ⏳ Pending — CI job not yet assigned a GitHub runner; not a known code failure. Tracked by a [separate workflow](.github/workflows/ci-macos-arm64.yml) |
 | Python 3.11 / 3.12 | Declared as supported; not yet exercised in CI |
 
 ## Limitations
@@ -286,6 +287,8 @@ RIG Sentinel v0.1.0 is a **static analyzer**. In short:
 - Directories such as `tests/`, `examples/`, `fixtures/`, `vendor/` and `node_modules/` are
   skipped, and files larger than 1 MB are ignored.
 - Deep analysis is Python-focused; other languages receive text-based detection only.
+- **SARIF 2.1.0** works as an export format; GitHub Code Scanning integration is not yet validated.
+- macOS Apple Silicon is not yet validated in CI.
 - False positives and false negatives are expected.
 
 Read the full list in [docs/LIMITATIONS.md](docs/LIMITATIONS.md).

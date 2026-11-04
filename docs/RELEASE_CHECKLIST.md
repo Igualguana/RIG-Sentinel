@@ -35,7 +35,8 @@ A release is ready only when every item is checked — passing tests alone are n
 - ✅ HTML generated; values escaped; CSP present; no external resources
 - ✅ SARIF: `version == "2.1.0"`, one run, rules `RIG001`–`RIG004`
 - ⬜ SARIF validated with a SARIF-aware tool (e.g. Microsoft SARIF Multitool) — optional
-- ⬜ 🔒 Decide whether to fix SARIF locations (audit M-1) before advertising code-scanning upload
+- ✅ SARIF documented as an export format; GitHub Code Scanning integration not yet
+  validated (audit M-1 remains open for a future release)
 
 ## 5. Platforms
 
@@ -43,9 +44,10 @@ A release is ready only when every item is checked — passing tests alone are n
 - ✅ Ubuntu 24.04 — GitHub Actions, commit `6f3cdf5`
 - ✅ Ubuntu 26.04 — GitHub Actions, commit `6f3cdf5`
 - ✅ macOS 15 Intel — GitHub Actions, commit `6f3cdf5` (run 41875200637)
-- ⬜ macOS Apple Silicon (`macos-latest`) — not yet passing: on `6f3cdf5` the job ended
-  **cancelled**; earlier runs failed because no runner was acquired. Re-run, or drop the
-  job from required checks until runner capacity allows
+- ✅ Ubuntu 24.04, Ubuntu 26.04, macOS 15 Intel — 179 passed on commit `b0f7e24`
+  (run 41894175520)
+- ⏳ macOS Apple Silicon — pending validation (no runner assigned); not blocking the
+  release by owner decision (2026-11-04); moved to separate workflow `ci-macos-arm64.yml`
 - ⬜ Python 3.11 / 3.12 — declared supported, not yet run in CI
 
 ## 6. Security

@@ -1,0 +1,91 @@
+name: RIG Sentinel macOS Apple Silicon
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-scan:
+    name: Python 3.13 / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+
+    # Apple Silicon is validated in its own workflow so that GitHub-hosted runner
+    # capacity delays do not mark the main CI workflow as failed. Real failures here
+    # remain visible through this workflow's own status and README badge.
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Show system information
+        shell: bash
+        run: |
+          echo "Operating system:"
+          uname -a
+          echo "Architecture:"
+          uname -m
+          echo "Python:"
+          python --version
+          echo "Pip:"
+          python -m pip --version
+
+      - name: Install RIG Sentinel and development dependencies
+        shell: bash
+        run: |
+          python -m pip install -e ".[dev]"
+
+      - name: Run all automated tests
+        shell: bash
+        run: |
+          python -m pytest -q
+
+      - name: Validate CLI
+        shell: bash
+        run: |
+          rig-sentinel --help
+
+      - name: Generate HTML security report
+        shell: bash
+        run: |
+          rig-sentinel scan . --html rig-sentinel.html
+          test -s rig-sentinel.html
+
+      - name: Generate SARIF security report
+        shell: bash
+        run: |
+          rig-sentinel scan . --sarif rig-sentinel.sarif
+          test -s rig-sentinel.sarif
+
+      - name: Validate SARIF 2.1.0
+        shell: bash
+        run: |
+          python -c "import json; from pathlib import Path; p=json.loads(Path('rig-sentinel.sarif').read_text(encoding='utf-8')); assert p['version']=='2.1.0'; assert len(p['runs'])>=1; print('SARIF valid')"
+
+      - name: Upload HTML and SARIF reports
+        uses: actions/upload-artifact@v6
+        with:
+          name: rig-sentinel-reports-${{ matrix.os }}
+          path: |
+            rig-sentinel.html
+            rig-sentinel.sarif
+          if-no-files-found: error
+          retention-days: 14

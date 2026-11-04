@@ -16,7 +16,10 @@ Current suite: **179 tests** (as of v0.1.0 preparation), in 36 test modules unde
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs on every push and pull request to `main` with Python 3.13
-on Ubuntu 24.04, Ubuntu 26.04, macOS (Apple Silicon) and macOS 15 Intel. Each job:
+on Ubuntu 24.04, Ubuntu 26.04 and macOS 15 Intel. The same steps run on macOS Apple Silicon
+in a separate workflow, `.github/workflows/ci-macos-arm64.yml`, so that hosted-runner
+capacity delays do not mark the main workflow as failed; it has its own status badge.
+Each job:
 
 1. Installs the package with `pip install -e ".[dev]"`.
 2. Runs `python -m pytest -q`.
