@@ -46,8 +46,10 @@ A release is ready only when every item is checked — passing tests alone are n
 - ✅ macOS 15 Intel — GitHub Actions, commit `6f3cdf5` (run 41875200637)
 - ✅ Ubuntu 24.04, Ubuntu 26.04, macOS 15 Intel — 179 passed on commit `b0f7e24`
   (run 41894175520)
-- ⏳ macOS Apple Silicon — pending validation (no runner assigned); not blocking the
-  release by owner decision (2026-11-04); moved to separate workflow `ci-macos-arm64.yml`
+- ✅ Ubuntu 24.04, Ubuntu 26.04, macOS 15 Intel — 179 passed on commit `2fd5f2e`
+  (run 41896617740)
+- ✅ macOS Apple Silicon ARM64 — 179 passed on commit `2fd5f2e` (run 41896617670,
+  separate workflow `ci-macos-arm64.yml`)
 - ⬜ Python 3.11 / 3.12 — declared supported, not yet run in CI
 
 ## 6. Security

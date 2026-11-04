@@ -65,11 +65,18 @@ is claimed.
 
 | Platform | Status |
 |---|---|
-| Windows, Python 3.13 | Validated (179 tests) |
-| Ubuntu 24.04 / 26.04, Python 3.13 | Validated in GitHub Actions |
-| macOS 15 Intel, Python 3.13 | Validated in GitHub Actions |
-| **macOS Apple Silicon (`macos-latest`)** | **Pending validation.** The CI job has not yet been assigned a GitHub-hosted runner (runner capacity), so no result exists yet. This is not a known code failure; the package is pure Python with no native dependencies. Apple Silicon runs in a separate workflow (`ci-macos-arm64.yml`) with its own status badge. |
+| Windows, Python 3.13 | Validated — 179 tests passed (maintainer machine) |
+| Ubuntu 24.04, Python 3.13 | Validated — 179 tests passed (GitHub Actions) |
+| Ubuntu 26.04, Python 3.13 | Validated — 179 tests passed (GitHub Actions) |
+| macOS 15 Intel, Python 3.13 | Validated — 179 tests passed (GitHub Actions) |
+| macOS Apple Silicon ARM64, Python 3.13 | Validated — 179 tests passed (GitHub Actions, separate workflow `ci-macos-arm64.yml`) |
 | Python 3.11 / 3.12 | Declared supported (`requires-python >= 3.11`) but not yet exercised in CI |
+
+GitHub Actions results refer to commit `2fd5f2e` (main CI run `41896617740`; Apple Silicon
+run `41896617670`). Apple Silicon is kept in its own workflow because GitHub-hosted
+`macos-latest` runners have had capacity delays; this keeps runner queueing from marking the
+main CI as failed while real failures stay visible on its own badge. Operating systems,
+architectures and Python versions not listed above have not been tested.
 
 ## CI behavior
 

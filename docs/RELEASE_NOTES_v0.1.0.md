@@ -72,9 +72,11 @@ Get-FileHash .\rig_sentinel-0.1.0-py3-none-any.whl -Algorithm SHA256
 | Ubuntu 24.04 (GitHub Actions) | ✅ 179 tests passed |
 | Ubuntu 26.04 (GitHub Actions) | ✅ 179 tests passed |
 | macOS 15 Intel (GitHub Actions) | ✅ 179 tests passed |
-| macOS Apple Silicon | ⏳ Pending — the CI job has not yet been assigned a GitHub runner; not a known code failure |
+| macOS Apple Silicon ARM64 (GitHub Actions) | ✅ 179 tests passed |
 
-Each CI job also generates HTML and SARIF reports and validates the SARIF version. Precision
+GitHub Actions results are for commit `2fd5f2e` (main CI run `41896617740`, Apple Silicon run
+`41896617670`). Each CI job also generates HTML and SARIF reports and validates the SARIF
+version. Platforms and Python versions not listed here have not been tested. Precision
 regression tests are derived from reviewing the OpenAI Agents SDK and MCP reference servers
 repositories.
 
@@ -90,7 +92,8 @@ repositories.
   yet validated**: some results lack file locations (all results when scanning on Windows).
 - Directories such as `tests/`, `examples/`, `fixtures/` and `vendor/` are skipped; files over
   1 MB are ignored. Deep analysis is Python-focused.
-- macOS Apple Silicon and Python 3.11/3.12 are not yet validated in CI.
+- Python 3.11 and 3.12 are declared supported but not yet validated in CI (all platforms
+  above were tested with Python 3.13).
 
 Full details: [Limitations](https://github.com/Igualguana/RIG-Sentinel/blob/v0.1.0/docs/LIMITATIONS.md).
 

@@ -266,12 +266,16 @@ code execution. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 | Platform | Status for v0.1.0 |
 |---|---|
-| Windows (Python 3.13) | ✅ 179 tests passing (maintainer machine) |
-| Ubuntu 24.04 (Python 3.13) | ✅ GitHub Actions |
-| Ubuntu 26.04 (Python 3.13) | ✅ GitHub Actions |
-| macOS 15 Intel (Python 3.13) | ✅ GitHub Actions |
-| macOS Apple Silicon (`macos-latest`) | ⏳ Pending — CI job not yet assigned a GitHub runner; not a known code failure. Tracked by a [separate workflow](.github/workflows/ci-macos-arm64.yml) |
+| Windows (Python 3.13) | ✅ 179 tests passed (maintainer machine) |
+| Ubuntu 24.04 (Python 3.13) | ✅ 179 tests passed — GitHub Actions |
+| Ubuntu 26.04 (Python 3.13) | ✅ 179 tests passed — GitHub Actions |
+| macOS 15 Intel (Python 3.13) | ✅ 179 tests passed — GitHub Actions |
+| macOS Apple Silicon ARM64 (Python 3.13) | ✅ 179 tests passed — GitHub Actions, [separate workflow](.github/workflows/ci-macos-arm64.yml) |
 | Python 3.11 / 3.12 | Declared as supported; not yet exercised in CI |
+
+GitHub Actions results are for commit `2fd5f2e` (main CI run `41896617740`, Apple Silicon
+run `41896617670`). Other operating systems, architectures and Python versions have not
+been tested.
 
 ## Limitations
 
@@ -288,7 +292,7 @@ RIG Sentinel v0.1.0 is a **static analyzer**. In short:
   skipped, and files larger than 1 MB are ignored.
 - Deep analysis is Python-focused; other languages receive text-based detection only.
 - **SARIF 2.1.0** works as an export format; GitHub Code Scanning integration is not yet validated.
-- macOS Apple Silicon is not yet validated in CI.
+- CI covers Python 3.13 only; Python 3.11 and 3.12 are declared but not yet tested.
 - False positives and false negatives are expected.
 
 Read the full list in [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
