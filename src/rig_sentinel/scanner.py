@@ -1,7 +1,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from rig_sentinel.agents import AgentDetector, AgentFinding
@@ -31,6 +31,7 @@ from rig_sentinel.multi_agent_graph import (
     MultiAgentGraphBuilder,
     MultiAgentGraphResult,
 )
+from rig_sentinel.policy_generator import PolicyGenerator, SecurityPolicy
 from rig_sentinel.privilege import (
     PrivilegeAnalyzer,
     PrivilegeFinding,
@@ -84,6 +85,7 @@ class ScanReport:
 
     agents: tuple[AgentFinding, ...]
     exposure: ExposureReport
+    security_policies: tuple[SecurityPolicy, ...] = ()
 
     @property
     def provider_count(self) -> int:
@@ -142,6 +144,10 @@ class ScanReport:
         return len(self.risk_propagation_findings)
 
     @property
+    def policy_count(self) -> int:
+        return len(self.security_policies)
+
+    @property
     def agent_count(self) -> int:
         return len(self.agents)
 
@@ -179,6 +185,7 @@ class RepositoryScanner:
 
         # Exposure analysis
         self.exposure_builder = ExposureReportBuilder()
+        self.policy_generator = PolicyGenerator()
 
     def scan(self) -> ScanReport:
         providers: list[ProviderFinding] = []
@@ -375,7 +382,7 @@ class RepositoryScanner:
         # 13. Final Scan Report
         # --------------------------------------------------
 
-        return ScanReport(
+        report = ScanReport(
             root=str(self.root),
             files_scanned=files_scanned,
             providers=tuple(providers),
@@ -393,6 +400,9 @@ class RepositoryScanner:
             agents=agents_tuple,
             exposure=exposure,
         )
+
+        security_policies = self.policy_generator.generate(report)
+        return replace(report, security_policies=security_policies)
 
     @staticmethod
     def _unique(items: list) -> list:

@@ -189,6 +189,19 @@ def report_to_dict(report) -> dict:
             for finding in report.risk_propagation_findings
         ],
 
+        "security_policies": [
+            {
+                "agent": policy.agent,
+                "identity": policy.identity,
+                "severity": policy.severity,
+                "enforcement": policy.enforcement,
+                "controls": list(policy.controls),
+                "reasons": list(policy.reasons),
+            }
+            for policy in report.security_policies
+        ],
+        "policy_count": report.policy_count,
+
         "agents": [
             {
                 "name": item.name,
@@ -598,6 +611,39 @@ def print_report(report) -> None:
     print()
 
     # --------------------------------------------------------
+    # SECURITY POLICIES (ADVISORY)
+    # --------------------------------------------------------
+
+    print("SECURITY POLICIES (ADVISORY)")
+    print("-" * 52)
+
+    if not report.security_policies:
+        print("No advisory identity policies generated")
+    else:
+        for policy in sorted(
+            report.security_policies,
+            key=lambda item: (
+                _severity_rank(item.severity),
+                item.agent,
+                item.identity,
+            ),
+        ):
+            print(f"[{policy.severity}] Agent: {policy.agent}")
+            print(f"Identity:    {policy.identity}")
+            print(f"Enforcement: {policy.enforcement}")
+            print("Proposed controls:")
+            for control in policy.controls:
+                print(f"  - {control}")
+            if policy.reasons:
+                print("Reasons:")
+                for reason in policy.reasons:
+                    print(f"  - {reason}")
+            print()
+
+    print("Policies are recommendations only; no controls are enforced.")
+    print()
+
+    # --------------------------------------------------------
     # AGENTS
     # --------------------------------------------------------
 
@@ -801,6 +847,7 @@ def print_report(report) -> None:
         f"Risk propagation findings: "
         f"{report.risk_propagation_finding_count}"
     )
+    print(f"Advisory policies:       {report.policy_count}")
     print(f"Agents:                  {report.agent_count}")
 
 
