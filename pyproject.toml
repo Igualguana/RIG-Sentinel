@@ -9,8 +9,14 @@ description = "Open-source Agent Exposure Management platform"
 requires-python = ">=3.11"
 dependencies = []
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0,<10.0",
+]
+
 [project.scripts]
 rig-sentinel = "rig_sentinel.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
