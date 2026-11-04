@@ -273,9 +273,9 @@ code execution. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 | macOS Apple Silicon ARM64 (Python 3.13) | ✅ 179 tests passed — GitHub Actions, [separate workflow](.github/workflows/ci-macos-arm64.yml) |
 | Python 3.11 / 3.12 | Declared as supported; not yet exercised in CI |
 
-GitHub Actions results are for commit `2fd5f2e` (main CI run `41896617740`, Apple Silicon
-run `41896617670`). Other operating systems, architectures and Python versions have not
-been tested.
+GitHub Actions results are for the v0.1.0 release candidate on `main` (see the
+[Actions history](https://github.com/Igualguana/RIG-Sentinel/actions)). Other operating systems, architectures and Python
+versions have not been tested.
 
 ## Limitations
 

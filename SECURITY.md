@@ -18,6 +18,8 @@ discussions or pull requests.**
 Report privately through **GitHub private vulnerability reporting**:
 <https://github.com/Igualguana/RIG-Sentinel/security/advisories/new>
 
+If you cannot use GitHub, e-mail **security@rigindustrialusa.com** instead.
+
 Please include:
 
 - A description of the issue and its impact.

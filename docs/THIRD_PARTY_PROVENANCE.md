@@ -67,7 +67,8 @@ third-party source code:
    functions have return-type annotations); no identical multi-line blocks shared
    across modules; non-ASCII characters limited to project UI symbols (`—`, `→`).
 6. **Git history** — all 25 commits authored by the project founder; no merged pull
-   requests or external contributors as of commit `6f3cdf5`.
+   requests or external contributors as of commit `fix: improve agent precision and shared credential risk classification`
+   (tree `8376946518`).
 7. **Distribution check** — built wheel and sdist inspected for unexpected files.
 
 ### Not performed

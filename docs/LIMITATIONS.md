@@ -72,8 +72,8 @@ is claimed.
 | macOS Apple Silicon ARM64, Python 3.13 | Validated — 179 tests passed (GitHub Actions, separate workflow `ci-macos-arm64.yml`) |
 | Python 3.11 / 3.12 | Declared supported (`requires-python >= 3.11`) but not yet exercised in CI |
 
-GitHub Actions results refer to commit `2fd5f2e` (main CI run `41896617740`; Apple Silicon
-run `41896617670`). Apple Silicon is kept in its own workflow because GitHub-hosted
+GitHub Actions results are for the v0.1.0 release candidate on `main` (see the
+[Actions history](https://github.com/Igualguana/RIG-Sentinel/actions)). Apple Silicon is kept in its own workflow because GitHub-hosted
 `macos-latest` runners have had capacity delays; this keeps runner queueing from marking the
 main CI as failed while real failures stay visible on its own badge. Operating systems,
 architectures and Python versions not listed above have not been tested.

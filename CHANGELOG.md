@@ -32,7 +32,7 @@ First public release of **RIG Sentinel Community**.
 - Advisory security policy generator.
 - GitHub Actions CI with Python 3.13 on Ubuntu 24.04, Ubuntu 26.04 and macOS 15 Intel, plus
   macOS Apple Silicon ARM64 in a separate workflow; 179 tests passed on each platform for
-  commit `2fd5f2e` (runs `41896617740` and `41896617670`), and on Windows. Each CI job
+  the release candidate, and on Windows. Each CI job
   generates HTML and SARIF artifacts.
 - Apache License 2.0, NOTICE, Code of Conduct, contribution guide (code review rules,
   Apache-2.0 inbound=outbound contributions, no CLA), security policy with coordinated

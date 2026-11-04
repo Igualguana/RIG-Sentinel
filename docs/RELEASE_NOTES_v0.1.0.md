@@ -74,8 +74,8 @@ Get-FileHash .\rig_sentinel-0.1.0-py3-none-any.whl -Algorithm SHA256
 | macOS 15 Intel (GitHub Actions) | ✅ 179 tests passed |
 | macOS Apple Silicon ARM64 (GitHub Actions) | ✅ 179 tests passed |
 
-GitHub Actions results are for commit `2fd5f2e` (main CI run `41896617740`, Apple Silicon run
-`41896617670`). Each CI job also generates HTML and SARIF reports and validates the SARIF
+GitHub Actions results are for the v0.1.0 release commit (see the repository's Actions
+history). Each CI job also generates HTML and SARIF reports and validates the SARIF
 version. Platforms and Python versions not listed here have not been tested. Precision
 regression tests are derived from reviewing the OpenAI Agents SDK and MCP reference servers
 repositories.

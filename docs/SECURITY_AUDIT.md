@@ -3,7 +3,7 @@
 | Item | Value |
 |---|---|
 | Audit date | 2026-11-04 |
-| Audited commit | `6f3cdf5` (`main`, 25 commits, 78 tracked files) |
+| Audited commit | `fix: improve agent precision and shared credential risk classification` (tree `8376946518`; `main`, 25 commits, 78 tracked files) |
 | Scope | Working tree, full Git history (all refs), packaging, CI configuration, report output safety |
 | Method | Local, offline review. No code or candidate secrets were sent to external services. No third-party repository code was executed. |
 | Result | **PASS WITH WARNINGS — no Blocker findings** |
@@ -161,10 +161,11 @@ external resources or scripts.
 `OPENAI_API_KEY`, `STRIPE_SECRET_KEY`, `GITHUB_TOKEN` and the e-mail addresses
 `customer@example.com` / `user@example.com` (reserved domain) appear in tests; no values.
 
-**I-7 — Author identity in commit metadata.** All 25 commits are authored by a single
-identity whose name and e-mail address will become public with the history. This is
-normal for open source; confirm the owner is comfortable publishing that e-mail address
-(GitHub offers a `noreply` address for future commits).
+**I-7 — Author identity in commit metadata.** All commits are authored by Randy
+Igualguana. Before publication, the author/committer/tagger e-mail in the history was
+changed from a personal address to the project address `opensource@rigindustrialusa.com`
+(names, dates, messages and file contents unchanged; commit IDs changed). The audit
+results above apply to the same file trees.
 
 ## 4. Tracked files and `.gitignore`
 

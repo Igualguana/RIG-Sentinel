@@ -41,15 +41,11 @@ A release is ready only when every item is checked — passing tests alone are n
 ## 5. Platforms
 
 - ✅ Windows — Python 3.13 (maintainer machine)
-- ✅ Ubuntu 24.04 — GitHub Actions, commit `6f3cdf5`
-- ✅ Ubuntu 26.04 — GitHub Actions, commit `6f3cdf5`
-- ✅ macOS 15 Intel — GitHub Actions, commit `6f3cdf5` (run 41875200637)
-- ✅ Ubuntu 24.04, Ubuntu 26.04, macOS 15 Intel — 179 passed on commit `b0f7e24`
-  (run 41894175520)
-- ✅ Ubuntu 24.04, Ubuntu 26.04, macOS 15 Intel — 179 passed on commit `2fd5f2e`
-  (run 41896617740)
-- ✅ macOS Apple Silicon ARM64 — 179 passed on commit `2fd5f2e` (run 41896617670,
-  separate workflow `ci-macos-arm64.yml`)
+- ✅ Ubuntu 24.04, Ubuntu 26.04, macOS 15 Intel — 179 passed (GitHub Actions, main CI)
+- ✅ macOS Apple Silicon ARM64 — 179 passed (GitHub Actions, separate workflow
+  `ci-macos-arm64.yml`)
+- ⬜ Re-confirm both workflows pass on the final release commit after the author e-mail
+  migration (file contents unchanged; commit IDs changed)
 - ⬜ Python 3.11 / 3.12 — declared supported, not yet run in CI
 
 ## 6. Security
