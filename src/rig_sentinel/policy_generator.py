@@ -116,7 +116,10 @@ class PolicyGenerator:
 
                 entry["severity"] = self._highest_severity(
                     entry["severity"],
-                    finding.severity,
+                    # This source establishes shared identity *references*,
+                    # not reuse of the same secret. Cap it independently
+                    # of potentially stale upstream severity values.
+                    self._reference_only_severity(finding.severity),
                 )
 
                 entry["controls"].update(
@@ -174,6 +177,13 @@ class PolicyGenerator:
                 for policy in policies
             ],
         }
+
+    @classmethod
+    def _reference_only_severity(cls, incoming: str) -> str:
+        # Shared-reference findings alone cannot justify HIGH/CRITICAL.
+        if cls.SEVERITY_ORDER.get(incoming, 0) > cls.SEVERITY_ORDER["MEDIUM"]:
+            return "MEDIUM"
+        return incoming
 
     @staticmethod
     def _get_or_create(

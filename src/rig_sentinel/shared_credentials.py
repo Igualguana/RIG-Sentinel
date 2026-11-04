@@ -46,14 +46,16 @@ class SharedCredentialAnalyzer:
                     usage_count=usage_count,
                     severity=severity,
                     reason=(
-                        "The same credential is linked to multiple "
-                        "agents or workloads. Compromise of one agent "
-                        "may expose access shared with the others."
+                        "Multiple agents or workloads reference the "
+                        "same credential identity name. This does not "
+                        "establish that the underlying secret is shared "
+                        "or that the credential is exposed."
                     ),
                     recommendation=(
-                        "Use a dedicated credential or runtime identity "
-                        "for each agent or workload and scope each one "
-                        "to the minimum permissions required."
+                        "Verify whether these workloads use the same "
+                        "underlying secret. If sharing is confirmed, "
+                        "use separate scoped credentials or workload "
+                        "identities where appropriate."
                     ),
                 )
             )
@@ -72,11 +74,11 @@ class SharedCredentialAnalyzer:
         self,
         usage_count: int,
     ) -> str:
-        if usage_count >= 4:
-            return "CRITICAL"
-
+        # The analyzer only sees identity *names* and same-file links.
+        # It cannot prove that the same secret is reused. Count alone
+        # must never escalate this finding to HIGH or CRITICAL.
         if usage_count >= 2:
-            return "HIGH"
+            return "MEDIUM"
 
         return "LOW"
 

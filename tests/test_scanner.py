@@ -403,7 +403,7 @@ client = OpenAI(api_key=openai_key)
 
     assert finding.identity == "OPENAI_API_KEY"
     assert finding.usage_count == 2
-    assert finding.severity == "HIGH"
+    assert finding.severity == "MEDIUM"
     assert finding.agents == (
         "agent_a",
         "agent_b",
