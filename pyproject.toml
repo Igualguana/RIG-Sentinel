@@ -1,13 +1,37 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "rig-sentinel"
 version = "0.1.0"
-description = "Open-source Agent Exposure Management platform"
+description = "Open-source security scanner for AI agents, MCP servers, identities, permissions, and exposure risks"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.11"
+authors = [{ name = "Randy Igualguana" }]
+maintainers = [{ name = "Randy Igualguana" }]
 dependencies = []
+keywords = ["ai-security", "agent-security", "mcp", "security-scanner", "static-analysis", "sarif"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Security",
+    "Topic :: Software Development :: Quality Assurance",
+]
+
+[project.urls]
+Homepage = "https://github.com/Igualguana/RIG-Sentinel"
+Documentation = "https://github.com/Igualguana/RIG-Sentinel/tree/main/docs"
+Issues = "https://github.com/Igualguana/RIG-Sentinel/issues"
+Changelog = "https://github.com/Igualguana/RIG-Sentinel/blob/main/CHANGELOG.md"
+Company = "https://rigindustrialusa.com"
 
 [project.optional-dependencies]
 dev = [
@@ -19,4 +43,3 @@ rig-sentinel = "rig_sentinel.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-

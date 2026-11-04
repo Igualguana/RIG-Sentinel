@@ -1,0 +1,19 @@
+RIG Sentinel Community
+Copyright 2026 Randy Igualguana
+
+Founded, created and maintained by Randy Igualguana.
+
+Proposed commercial operator: RIG Industrial Technologies LLC
+(https://rigindustrialusa.com), subject to a separate written license agreement.
+Any such commercial license does not limit the permissions granted by the
+Apache License, Version 2.0.
+
+This product is licensed under the Apache License, Version 2.0.
+See the LICENSE file in the root of this repository for the full license text.
+
+This product includes software developed as part of the RIG Sentinel project
+(https://github.com/Igualguana/RIG-Sentinel).
+
+RIG Sentinel Community has no third-party runtime dependencies and does not
+bundle third-party source code. Development-only tooling (for example, pytest)
+is installed separately and is not redistributed with this project.

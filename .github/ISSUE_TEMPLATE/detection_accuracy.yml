@@ -1,0 +1,63 @@
+name: False positive / false negative
+description: A finding is wrong, or something should have been detected but was not.
+labels: ["detection-accuracy", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        RIG Sentinel is a static, heuristic analyzer, so accuracy reports are very valuable.
+        **Use synthetic code only. Never paste real secrets or proprietary code.**
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Type
+      options:
+        - False positive (reported but should not be)
+        - False negative (missed)
+        - Wrong severity or classification
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Agent detection
+        - AI provider detection
+        - MCP detection
+        - Tool / capability detection
+        - Identity / credential reference
+        - Credential flow
+        - Privilege / least privilege
+        - Shared credential reference
+        - Shadow agent
+        - Attack path / blast radius
+        - Policy / remediation
+        - SARIF / HTML / JSON output
+    validations:
+      required: true
+  - type: textarea
+    id: sample
+    attributes:
+      label: Minimal synthetic sample
+      description: Smallest file(s) that reproduce the behavior.
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual finding (sanitized)
+      render: text
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result and reasoning
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: RIG Sentinel version or commit
+    validations:
+      required: true

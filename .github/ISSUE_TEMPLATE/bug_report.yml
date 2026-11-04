@@ -1,0 +1,52 @@
+name: Bug report
+description: Something in RIG Sentinel does not work as documented.
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. **Do not include real secrets, credentials, customer code or personal data.**
+        For security vulnerabilities, use private reporting instead (see SECURITY.md).
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear description of the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Commands run and a minimal, synthetic repository layout if relevant.
+      placeholder: |
+        1. Create file agents/example.py with ...
+        2. Run `rig-sentinel scan . --json`
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: RIG Sentinel version or commit
+      placeholder: "0.1.0 / 6f3cdf5"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: OS and Python version
+      placeholder: "Windows 11, Python 3.13.2"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: Sanitized output only. Remove paths or names you consider sensitive.
+      render: text
