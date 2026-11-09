@@ -36,7 +36,11 @@ its API and schema may change before a release.
   - Size, count and nesting limits on policies and requests; any `Exception` during
     evaluation returns `DENY`.
 - **Tests:** 734 new tests (412 for the engine, 322 for hardening and limits); the full
-  suite has 913 tests. Validated locally on Windows with Python 3.13; not yet run in CI.
+  suite has 913 tests. Validated locally on Windows with Python 3.13, and in GitHub
+  Actions for the Genesis B2-M1 pull request (Python 3.13: 913 passed on each of Ubuntu
+  24.04, Ubuntu 26.04, macOS 15 Intel and macOS Apple Silicon). These results apply to
+  the unreleased development branch, not to the v0.1.0 release. See
+  [docs/TESTING.md](docs/TESTING.md#validation-status).
 - **Documentation:** `docs/POLICY_ENGINE.md`, `docs/THREAT_MODEL.md`, and updates to the
   README, architecture and testing documents.
 

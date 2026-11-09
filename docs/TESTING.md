@@ -46,7 +46,17 @@ To make any warning fail the run, add `-W error::Warning`.
 |---|---|---|
 | Local, Windows 11, Python 3.13.2 | Full suite (913 tests) from a clean, non-editable install in a fresh virtual environment, with `-W error::Warning` | 913 passed, 0 failed, 0 skipped, 0 warnings |
 | GitHub Actions (Ubuntu 24.04, Ubuntu 26.04, macOS 15 Intel, macOS Apple Silicon) | v0.1.0 (179 tests) | Passed for the v0.1.0 release candidate |
-| GitHub Actions | Policy engine (913 tests) | **Not yet run.** Linux and macOS results for the policy engine are unknown until CI runs on a pull request |
+| GitHub Actions, Ubuntu 24.04 (x86_64, Python 3.13) | Genesis B2-M1 pull request (913 tests) | 913 passed |
+| GitHub Actions, Ubuntu 26.04 (x86_64, Python 3.13) | Genesis B2-M1 pull request (913 tests) | 913 passed |
+| GitHub Actions, macOS 15 Intel (x86_64, Python 3.13) | Genesis B2-M1 pull request (913 tests) | 913 passed |
+| GitHub Actions, macOS Apple Silicon (arm64, Python 3.13) | Genesis B2-M1 pull request (913 tests) | 913 passed |
+
+The four GitHub Actions results above are from the pull-request validation of the
+unreleased Genesis B2-M1 development branch at commit `9f0f59f`, tested as merged with
+`main` (workflow runs 42678818798 and 42678819046). They are not results for the v0.1.0
+release, which contains only the 179 scanner and CLI tests. In CI, each job also ran the
+CLI, generated the HTML and SARIF reports and validated the SARIF 2.1.0 output. CI runs
+`python -m pytest -q` without `-W error::Warning`.
 
 Python 3.11 and 3.12 are declared as supported but are not exercised by CI or by the local
 validation above.
