@@ -197,7 +197,7 @@ characters.
 |---|---|---|---|
 | `fs` | `fs:/abs/path` | `//` and `.` collapsed, trailing `/` removed | relative paths, leading `//` (UNC), `..`, `\`, `%`, `:` (drive letters, NTFS streams), segments ending in `.`, segments over 255 characters, Windows device names (`CON`, `PRN`, `AUX`, `NUL`, `COM0`–`COM9`, `LPT0`–`LPT9`, in any case, with or without an extension), wildcards |
 | `db` | `db:<database>[/<table>]` | — | uppercase, more than two parts |
-| `url` | `url:http(s)://host[:port][/path]` | host lowercased, default port removed, path as `fs` | credentials (`@`), query, fragment, `%`, `\`, other schemes, IPv6, numeric/hex host names like `1.2.3` or `0x7f000001` |
+| `url` | `url:http(s)://host[:port][/path]` | host lowercased, default port removed, path as `fs`; scheme, host and port together form the URL's authority (`http://h`, `https://h` and `https://h:8443` are different authorities) | credentials (`@`), query, fragment, `%`, `\`, other schemes, IPv6, numeric/hex host names like `1.2.3` or `0x7f000001` |
 | `shell` | `shell:<command-name>` | — | paths, arguments, whitespace |
 | `email` | `email:<domain>` | lowercased | IP literals |
 | `secret` | `secret:<name>[/<name>…]` | — | uppercase, more than 16 parts |
@@ -266,8 +266,9 @@ M1 therefore rejects unsafe shapes instead of guessing filesystem, database or
 secret-store semantics. The rule: on `fs:`, `url:`, `db:` and `secret:` resources, a rule may
 not be nested **strictly inside** an overlapping rule, or the default, that has a
 **weaker** effect (strength: deny > require_approval > allow). Nesting is evaluated
-within one kind and one authority (host or database); a `*` resource pattern contains
-everything.
+within one kind and one authority: for `url:` the scheme, host and port together, for
+`db:` the database; `fs:` and `secret:` have a single authority. A `*` resource pattern
+contains everything.
 
 | Policy | Result |
 |---|---|
@@ -292,6 +293,7 @@ everything.
 | `allow db:crm/orders` + `allow db:crm/customers` (explicit allowlist) | accepted |
 | `allow secret:kv/app/api` + `deny secret:kv/app/key` (siblings) | accepted (see the residual gap below) |
 | `allow db:crm/**` + `deny *` (deny on all resources) | accepted |
+| `allow fs:/srv/secret/**` + `deny fs:/srv/secret` (exact name at the allowed prefix; not strictly nested) | accepted (see the residual risks below for `url:`) |
 | allow, approval and deny rules for disjoint agents, tools or operations | accepted |
 
 **Which root-wide denies are exempt.** Only `deny fs:/**` (the whole `fs:` namespace) and
@@ -320,10 +322,16 @@ opt-out exists.
 ### Residual alias risks that static validation does not cover
 
 The structure checks see **nesting within one kind and one authority**. They cannot see
-an allow that is a *sibling* of a deny, or one under a different database, host or
-top-level secret name, that names an alias of the denied resource. Recognizing that
-requires provider semantics, which the engine deliberately does not encode. These cases
-are accepted, and the alias is **ALLOWED**:
+an allow that is a *sibling* of a deny, or one under a different authority (database;
+URL scheme, host or port; top-level secret name), that names an alias of the denied
+resource. Recognizing that requires filesystem, server or provider semantics, which the
+engine deliberately does not encode. This applies to every resource kind, `fs:` and
+`url:` included.
+
+**An identifier that matches an `allow` rule is ALLOWED, even if it names the same
+underlying object as a resource that a `deny` rule protects under another identifier.**
+The engine compares names; a deny protects only the names it matches. The following
+policies are accepted, and the alias is **ALLOWED**:
 
 | Policy (accepted) | Alias request that is ALLOWED | Why it can be the same object |
 |---|---|---|
@@ -331,18 +339,28 @@ are accepted, and the alias is **ALLOWED**:
 | `allow db:other/**` + `deny db:crm/**` | `db:other/crm.dbo.salaries` | Some databases accept cross-database names |
 | `allow *` + `deny shell:rm` (shell tool) | `shell:unlink` | A different command with the same effect |
 | `allow *` + `deny email:rival.example.com` (mail tool) | `email:mail.rival.example.com` | Subdomains or other domains of the same recipient |
+| `allow fs:/srv/SECRE~1/**` + `deny fs:/srv/secret/**` (siblings) | `fs:/srv/SECRE~1/key` | An 8.3 short name of the same directory on NTFS |
+| `allow url:http://app.example.com/**` + `deny url:https://app.example.com/admin/**` | `url:http://app.example.com/admin/x` | Many servers serve the same content over `http` and `https`, or on another port |
+| `allow url:https://www.app.example.com/**` + `deny url:https://app.example.com/admin/**` | `url:https://www.app.example.com/admin/x` | Host-name aliases (DNS names, IP addresses) can reach the same server |
+| `allow url:https://app.example.com/admin/**` + `deny url:https://app.example.com/admin` (exact name at the allowed prefix) | `url:https://app.example.com/admin/index.html` | Many servers serve a default document for a directory path; whether `/admin` and `/admin/index.html` are the same resource depends on the server |
 
 `tests/test_policy_hardening.py::test_known_alias_gaps_are_accepted_and_bypassable` pins
-these, so they cannot be mistaken for guarantees. In the same way, an explicit allow can
-always name an alias directly (a symlink path, a view, a secret's API path).
+the first four rows, so they cannot be mistaken for guarantees. The `fs:` and `url:` rows
+follow from the same name-only matching and are not pinned by a dedicated test; the
+exact-name shape is pinned as accepted for `fs:` by
+`test_alias_safe_shapes_are_accepted` ("deny of the allowed directory entry itself"). In
+the same way, an explicit allow can always name an alias directly (a symlink path, a
+view, a secret's API path).
 
-**Safe policy:** for `db:`, `secret:`, `shell:` and `email:`, use **allowlists only**, and do
-not rely on deny rules to protect a resource that an overlapping allow could also reach
-under another name. Under allowlists, alternate identifiers fail closed
-(`test_alternate_identifiers_fail_closed_under_db_secret_allowlists`).
+**Safe policy:** for every resource kind, prefer **allowlists**, and do not rely on deny
+rules to protect a resource that an allow could also reach under another name. For
+`db:`, `secret:`, `shell:` and `email:`, use allowlists only. Under allowlists, an
+alternate identifier that no allow names fails closed to `DEFAULT_DENY`
+(`test_alternate_identifiers_fail_closed_under_db_secret_allowlists`); an alternate
+identifier that an allow does name is ALLOWED.
 
-**What remains the trusted adapter's job (Genesis D):** translating each request into the
-provider's canonical identity before evaluation:
+**What would remain a trusted adapter's job (Genesis D, planned and not implemented):**
+translating each request into the provider's canonical identity before evaluation:
 - for databases, the fully qualified object from the live catalog, with views and
   synonyms resolved;
 - for secret stores, the logical secret path, without API prefixes or mount aliases.
@@ -358,8 +376,9 @@ still require the adapter.
 
 **The `~` character is still accepted.** Rejecting it would not remove short-name aliases,
 since administrators can assign short names without `~`, and would break common POSIX
-names such as `notes~` or `~user` URL paths. With carve-outs rejected, a `~` alias can only
-reach `DEFAULT_DENY`.
+names such as `notes~` or `~user` URL paths. With carve-outs rejected, a `~` alias that no
+allow rule names gets `DEFAULT_DENY`; a `~` alias that an allow rule names (for example a
+sibling `allow fs:/srv/SECRE~1/**`, see the table above) is ALLOWED.
 
 ### Unicode
 
@@ -545,10 +564,12 @@ lacks. These requirements are design inputs for Genesis D; **none is implemented
   links, bind mounts, URL paths that a server treats case-insensitively, host-name
   aliases, schema-qualified or cross-database table names, views, synonyms, or alternate
   secret-store paths.
-  - Policy-shape checks prevent the alias bypass for **nested** deny or approval rules on
-    `fs:`, `url:`, `db:` and `secret:`.
-  - They do not cover **sibling or cross-authority** aliases (see the residual table
-    above).
+  - Policy-shape checks reject policies in which a deny or approval rule on `fs:`, `url:`,
+    `db:` or `secret:` is **nested** inside an overlapping weaker rule or default.
+  - They do not cover **sibling or cross-authority** aliases on any of these kinds (for
+    `url:`, the authority is the scheme, host and port), or an exact-name deny at the
+    same path as a prefix allow (see the residual table above). An alias that an allow
+    rule matches is ALLOWED.
   - They do not protect allowlists against **links** or provider aliases that point
     outside the allowed set. That requires the adapter's resource identity verification.
 - **Rejected rather than interpreted.** Windows paths, non-ASCII paths, IPv6, URL queries
@@ -558,17 +579,18 @@ lacks. These requirements are design inputs for Genesis D; **none is implemented
   downgrades are rejected, broad allows or approvals with exceptions on `fs:`, `url:`, `db:`
   or `secret:` resources cannot be expressed.
 - **`shell:` and `email:` carve-outs are accepted but not alias-safe**, and neither are
-  sibling or cross-authority `db:`/`secret:` patterns (see above). Use allowlists.
+  sibling or cross-authority patterns on `fs:`, `url:`, `db:` or `secret:` (see above).
+  Use allowlists.
 
 ### Which guarantees belong to M1, and which depend on Genesis D
 
-| Guarantee | M1 (this engine) | Requires Genesis D (adapter) |
+| Guarantee | M1 (this engine) | Would require Genesis D (planned adapter; not implemented) |
 |---|---|---|
 | Decision is deterministic, order-independent, default-deny | ✅ tested | — |
 | `Exception` during evaluation → DENY | ✅ tested | Treat no-decision (crash, timeout, `BaseException`) as "do not invoke" |
 | A policy is rejected when a deny/approval rule on `fs:`/`url:`/`db:`/`secret:` is nested in an overlapping weaker rule or default | ✅ tested | — |
-| A request naming a name alias of a protected **path** is not allowed | ✅ under accepted policies, except sibling/cross-authority allows that name the alias (they fail closed to `DEFAULT_DENY`) | **Links, junctions, hard links, mounts**: resolve the real object, check both identifiers, act on the checked handle |
-| Same for `db:` and `secret:` | ✅ for nested carve-outs; ❌ for sibling or cross-database/cross-name aliases | Canonical provider identity (fully qualified table, logical secret path) |
+| A request naming an alias of a protected `fs:` or `url:` resource is not allowed | ⚠️ **Partial, not guaranteed.** An alias that no allow rule matches gets `DEFAULT_DENY`. An alias that an allow rule matches (a sibling or cross-authority allow; for `url:` another scheme, host or port; a server's default document under an exact-name deny) is **ALLOWED**, even though a deny protects the same object under another name | **Links, junctions, hard links, mounts**: resolve the real object, check both identifiers, act on the checked handle. Server and host aliases: canonical URL identity |
+| Same for `db:` and `secret:` | ⚠️ **Partial.** Nested carve-outs are rejected; ❌ sibling or cross-database/cross-name aliases are ALLOWED | Canonical provider identity (fully qualified table, logical secret path) |
 | Same for `shell:` and `email:` | ❌ allowlist-only guidance | Semantic controls (sandboxing, recipient verification) |
 | Identity, assurance, tool identity and labels are genuine | ❌ caller-asserted | Authenticated context |
 | No time-of-check/time-of-use gap | ❌ out of scope | Operate on the checked handle |
