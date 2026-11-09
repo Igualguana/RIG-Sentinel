@@ -44,6 +44,16 @@ its API and schema may change before a release.
 - **Documentation:** `docs/POLICY_ENGINE.md`, `docs/THREAT_MODEL.md`, and updates to the
   README, architecture and testing documents.
 
+### Security
+
+- `DecisionRecord.error_type` now names an exception class only if it is one of Python's
+  built-in `Exception` classes, matched by identity; any other class is recorded as
+  `UnlistedError`. Previously, an exception class raised by a caller-supplied object
+  (such as a custom mapping or clock) could place arbitrary text, including control
+  characters, in `error_type`, and a class whose metaclass made `__name__` raise caused
+  `evaluate()` to raise instead of returning `DENY / EVALUATION_ERROR`. Records for
+  built-in exceptions and for normal requests are unchanged.
+
 ### Known limitations
 
 - **No enforcement.** Decisions are advisory until a trusted adapter (Genesis D, not

@@ -30,7 +30,9 @@ Rule order in the policy file never affects the result.
 
 from __future__ import annotations
 
+import builtins
 import hmac
+import re
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 
@@ -62,6 +64,43 @@ from rig_sentinel.policy.schema import WILDCARD
 from rig_sentinel.policy.validation import validate_policy
 
 Clock = Callable[[], datetime]
+
+# ``error_type`` of an EVALUATION_ERROR record names the exception class only if
+# that class *is* one of Python's built-in ``Exception`` classes; any other class
+# is recorded as UNLISTED_ERROR_TYPE. Exception classes raised during evaluation
+# can come from caller-supplied objects (a mapping, a clock), so their names,
+# metaclass properties, ``__eq__`` and ``__hash__`` are untrusted. The lookup
+# below therefore compares classes with ``is`` only: it never reads an
+# attribute of, hashes, or compares with the exception's class. Names come from
+# this table, built at import time from the ``builtins`` module.
+UNLISTED_ERROR_TYPE = "UnlistedError"
+_ERROR_TYPE_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+
+
+def _approved_error_types() -> tuple[tuple[type, str], ...]:
+    approved: list[tuple[type, str]] = []
+    for obj in vars(builtins).values():
+        if (
+            type(obj) is type  # plain classes only: no custom metaclass code runs below
+            and issubclass(obj, Exception)
+            and not any(obj is known for known, _ in approved)  # aliases, e.g. IOError
+        ):
+            name = obj.__name__
+            if type(name) is str and _ERROR_TYPE_NAME_RE.fullmatch(name):
+                approved.append((obj, name))
+    return tuple(approved)
+
+
+_APPROVED_ERROR_TYPES = _approved_error_types()
+
+
+def _error_type_name(exc: BaseException) -> str:
+    """Return a safe ``error_type`` for ``exc`` (see UNLISTED_ERROR_TYPE)."""
+    exc_class = type(exc)  # the real class; ``__class__`` overrides are ignored
+    for approved, name in _APPROVED_ERROR_TYPES:
+        if exc_class is approved:
+            return name
+    return UNLISTED_ERROR_TYPE
 
 
 def _utc_now() -> datetime:
@@ -162,7 +201,7 @@ class PolicyEngine:
         try:
             return self._evaluate(request)
         except Exception as exc:  # fail closed
-            return self._failure(type(exc).__name__)
+            return self._failure(exc)
 
     # ------------------------------------------------------------------
     # Internals
@@ -316,13 +355,13 @@ class PolicyEngine:
             error_type=error_type,
         )
 
-    def _failure(self, error_type: str) -> DecisionRecord:
+    def _failure(self, exc: BaseException) -> DecisionRecord:
         try:
             return self._record(
                 Decision.DENY,
                 ReasonCode.EVALUATION_ERROR,
                 None,
-                error_type=error_type[:64],
+                error_type=_error_type_name(exc),
             )
         except Exception:
             return FALLBACK_DENY

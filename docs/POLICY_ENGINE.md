@@ -421,8 +421,12 @@ What is guaranteed, and covered by tests:
 
 - Any **`Exception` subclass** raised inside `PolicyEngine.evaluate()` returns
   `DENY / EVALUATION_ERROR`. This covers a failing clock, a hostile mapping, an internal
-  bug, `RecursionError` and `MemoryError`. `error_type` holds the exception class name
-  only; the message is never recorded, because it may contain request data.
+  bug, `RecursionError` and `MemoryError`. `error_type` holds the name of the exception
+  class only if that class is one of Python's built-in `Exception` classes; any other
+  class is recorded as `UnlistedError`. The class is matched by identity, so its name,
+  metaclass and comparison methods are never used, and caller-supplied objects cannot
+  place text in the record or make `evaluate()` raise. The message is never recorded,
+  because it may contain request data.
 - If building that error record also fails, a `DENY` record built at import time is
   returned.
 - Requests are copied once and fully re-validated, including typed
