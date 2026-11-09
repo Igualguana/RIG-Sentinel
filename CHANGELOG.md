@@ -7,6 +7,55 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+Not released. The policy engine below is development work (Genesis B2, milestone M1);
+its API and schema may change before a release.
+
+### Added
+
+- **Genesis B2-M1 policy engine** (`rig_sentinel.policy`): a deterministic, advisory
+  decision point for AI-agent tool requests that returns `ALLOW`, `DENY` or
+  `REQUIRE_APPROVAL`. Standard library only, independent of the scanner and the CLI.
+  Every decision record carries `"enforced": false`; nothing is blocked at runtime.
+- **Policy API:** `load_policy_file`, `load_policy_bytes`, `load_policy_text`,
+  `validate_policy`, `lint_policy`, `policy_sha256`, `check_policy_digest`,
+  `PolicyEngine.evaluate`, `parse_request`, `parse_resource`, and the `DecisionRecord`
+  type (`rig.decision/v1`, with `to_dict()`).
+- **Policy validation:** strict TOML schema `rig.policy/v1` (unknown fields, wrong types
+  and wrongly cased values rejected; all issues reported at once, without echoing
+  values); default deny (`defaults.decision = "allow"` is rejected); deny overrides
+  approval, which overrides allow, independent of rule order; tool registry with
+  optional manifest digests; SHA-256 policy fingerprint with optional pinning.
+- **Security hardening:**
+  - Policies are rejected when a `deny` or `require_approval` rule on an `fs:`, `url:`,
+    `db:` or `secret:` resource is nested inside an overlapping weaker rule or a
+    `require_approval` default (`UNSAFE_PATH_CARVE_OUT`, `ALIAS_DOWNGRADE_RISK`), or
+    when the same path prefix is spelled with different letter case
+    (`PATH_CASE_CONFLICT`), because aliases of the protected name could bypass them.
+  - ASCII-only identifiers and resources; Windows device names, overlong path segments,
+    `..`, URL credentials, queries and percent-encoding are rejected.
+  - Size, count and nesting limits on policies and requests; any `Exception` during
+    evaluation returns `DENY`.
+- **Tests:** 734 new tests (412 for the engine, 322 for hardening and limits); the full
+  suite has 913 tests. Validated locally on Windows with Python 3.13; not yet run in CI.
+- **Documentation:** `docs/POLICY_ENGINE.md`, `docs/THREAT_MODEL.md`, and updates to the
+  README, architecture and testing documents.
+
+### Known limitations
+
+- **No enforcement.** Decisions are advisory until a trusted adapter (Genesis D, not
+  implemented) refuses tool calls that are not `ALLOW`.
+- **No authentication.** Agent identity, assurance, tool identity, resource and labels
+  are asserted by the caller.
+- **Names, not objects.** Symbolic links, junctions, hard links, mounts,
+  time-of-check/time-of-use, sibling and cross-database or cross-name aliases on `db:` and
+  `secret:`, and semantic aliases on `shell:` and `email:` are not detected.
+- Approvals are described but not issued or verified; no audit log, secret redaction,
+  policy signing, evaluation timeout or `rig-sentinel policy` CLI yet.
+- "Everything except" policies on `fs:`, `url:`, `db:` and `secret:` resources cannot be
+  written; use allowlists.
+
+See [docs/POLICY_ENGINE.md](docs/POLICY_ENGINE.md#known-limitations-m1).
+
 ## [0.1.0] — 2026-11-04
 
 First public release of **RIG Sentinel Community**.

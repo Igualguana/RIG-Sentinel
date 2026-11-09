@@ -10,8 +10,46 @@ python -m pytest -q
 The suite uses only `pytest` (installed by the `dev` extra) and the standard library. It
 needs no network access and no credentials.
 
-Current suite: **179 tests** (as of v0.1.0 preparation), in 36 test modules under
-`tests/`.
+Current suite, including the unreleased policy engine: **913 tests** in 49 test modules
+under `tests/`, plus the shared helper `tests/policy_fixtures.py` (not a test module):
+
+| Group | Modules | Tests |
+|---|---|---|
+| Scanner and CLI tests from v0.1.0 | 36 | 179 |
+| Policy engine, Genesis B2-M1 | 11 | 412 |
+| Policy engine hardening and limits | 2 | 322 |
+| **Total** | **49** | **913** |
+
+The v0.1.0 release had 179 tests; the other 734 test the unreleased policy engine.
+
+To run only the policy engine tests:
+
+```bash
+python -m pytest -q \
+  tests/test_policy_canonical.py tests/test_policy_determinism.py \
+  tests/test_policy_engine.py tests/test_policy_engine_adversarial.py \
+  tests/test_policy_identifiers.py tests/test_policy_isolation.py \
+  tests/test_policy_loader.py tests/test_policy_matching.py tests/test_policy_model.py \
+  tests/test_policy_resources.py tests/test_policy_validation.py \
+  tests/test_policy_hardening.py tests/test_policy_limits.py
+```
+
+A `tests/test_policy_*.py` glob is not equivalent: `test_policy_generator.py`,
+`test_policy_integration.py` and `test_policy_cli_integration.py` test the v0.1.0
+scanner's advisory policy generator, not the policy engine.
+
+To make any warning fail the run, add `-W error::Warning`.
+
+## Validation status
+
+| Where | Scope | Result |
+|---|---|---|
+| Local, Windows 11, Python 3.13.2 | Full suite (913 tests) from a clean, non-editable install in a fresh virtual environment, with `-W error::Warning` | 913 passed, 0 failed, 0 skipped, 0 warnings |
+| GitHub Actions (Ubuntu 24.04, Ubuntu 26.04, macOS 15 Intel, macOS Apple Silicon) | v0.1.0 (179 tests) | Passed for the v0.1.0 release candidate |
+| GitHub Actions | Policy engine (913 tests) | **Not yet run.** Linux and macOS results for the policy engine are unknown until CI runs on a pull request |
+
+Python 3.11 and 3.12 are declared as supported but are not exercised by CI or by the local
+validation above.
 
 ## Continuous integration
 
@@ -30,7 +68,7 @@ Each job:
 
 ## Test layout
 
-Tests mirror the modules in `src/rig_sentinel/`:
+Tests mirror the modules in `src/rig_sentinel/` and `src/rig_sentinel/policy/`:
 
 | Area | Test modules |
 |---|---|
@@ -41,6 +79,11 @@ Tests mirror the modules in `src/rig_sentinel/`:
 | Privilege | `test_privilege.py`, `test_least_privilege.py`, `test_permissions.py` |
 | Graphs and exposure | `test_graph.py`, `test_multi_agent_graph.py`, `test_attack_paths.py`, `test_blast_radius.py`, `test_exposure.py`, `test_exposure_report.py`, `test_risk_propagation.py` |
 | Remediation and policy | `test_remediation.py`, `test_policy_generator.py`, `test_policy_integration.py`, `test_policy_cli_integration.py`, `test_shadow_agents.py` |
+| Policy engine: model, grammar and resources | `test_policy_model.py`, `test_policy_identifiers.py`, `test_policy_resources.py`, `test_policy_matching.py` |
+| Policy engine: loading, validation and digests | `test_policy_loader.py`, `test_policy_validation.py`, `test_policy_canonical.py` |
+| Policy engine: decisions | `test_policy_engine.py`, `test_policy_engine_adversarial.py`, `test_policy_determinism.py` |
+| Policy engine: isolation from the scanner, CLI and I/O | `test_policy_isolation.py` |
+| Policy engine: hardening and limits | `test_policy_hardening.py` (aliases, carve-outs, Unicode, trust boundary, fail-closed boundary), `test_policy_limits.py` (size and worst-case inputs) |
 | Reports and CLI | `test_html_report.py`, `test_html_cli_integration.py`, `test_sarif_report.py`, `test_scan.py` |
 | End to end | `test_scanner.py`, `test_models.py` |
 | Precision regressions | `test_precision_external.py` |
@@ -61,6 +104,11 @@ Tests mirror the modules in `src/rig_sentinel/`:
   genuinely changes, explain why in the pull request.
 - **Report formats.** Changes to JSON, HTML or SARIF output need tests covering the new
   structure and escaping/sanitization behavior.
+- **Policy engine.** Policy tests build policies from TOML text, mostly from the baseline
+  policy in `tests/policy_fixtures.py`, and use a fixed clock so decision records are
+  reproducible. Known residual risks are pinned by tests that assert the current
+  behavior (for example `test_known_alias_gaps_are_accepted_and_bypassable`); a change
+  that closes one must update that test and the documentation together.
 
 ## Manual verification before a release
 

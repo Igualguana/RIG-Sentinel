@@ -277,6 +277,146 @@ GitHub Actions results are for the v0.1.0 release candidate on `main` (see the
 [Actions history](https://github.com/Igualguana/RIG-Sentinel/actions)). Other operating systems, architectures and Python
 versions have not been tested.
 
+## Policy engine (Genesis B2-M1, unreleased)
+
+> [!IMPORTANT]
+> The policy engine is **in development and not part of the v0.1.0 release**. Its Python
+> API and policy schema may change. It is an **advisory decision engine**: it decides
+> whether a request should be allowed, but it does not block, execute or approve
+> anything. Every decision record carries `"enforced": false`. Runtime enforcement
+> adapters are planned (Genesis D) and do not exist yet.
+
+`rig_sentinel.policy` is a deterministic decision point for AI-agent tool requests:
+"agent *A* wants to perform operation *O* with tool *T* on resource *R*". It uses the
+standard library only and is independent of the scanner and the CLI; the
+`rig-sentinel scan` command is unchanged.
+
+| Decision | Meaning |
+|---|---|
+| `ALLOW` | A rule permits the request and no deny or approval rule matches. |
+| `DENY` | A deny rule matches, no rule matches (default deny), or the request, tool or policy is invalid (fail closed). |
+| `REQUIRE_APPROVAL` | A rule requires human approval. Treat it as **not allowed**: approvals are not processed yet. |
+
+- **Strict policy validation.** Policies are TOML (`rig.policy/v1`). Unknown fields,
+  wrongly cased values, duplicate ids, rules that name unregistered tools and similar
+  mistakes reject the whole policy, with every issue reported at once.
+- **Default deny.** A request that no rule allows is denied. The default can be `deny` or
+  `require_approval`; `allow` is rejected.
+- **Deterministic decisions.** Rule order never matters: any matching `deny` wins, then
+  `require_approval`, then `allow`. Any `Exception` during evaluation becomes `DENY`.
+- **SHA-256 pinning.** `policy.sha256` fingerprints the policy's canonical content. Pass
+  a reviewed value to `load_policy_file(..., expected_sha256=...)` or
+  `PolicyEngine(..., expected_policy_sha256=...)` to refuse any other policy.
+- **Conservative resource matching.** Resources (`fs:`, `db:`, `url:`, `secret:`,
+  `shell:`, `email:`) are matched as exact, case-sensitive names; the only wildcards
+  are `*` and a trailing `/**`. Ambiguous forms such as `..`, Windows paths, URL queries
+  and non-ASCII names are rejected. Policies whose safety would depend on recognizing
+  aliases (a narrow deny or approval rule inside a broader allow on `fs:`, `url:`, `db:`
+  or `secret:`) are rejected. Prefer allowlists.
+
+### Example
+
+`policy.toml` (valid under the current validator):
+
+```toml
+schema_version = "rig.policy/v1"
+policy_id      = "helpdesk-example"
+policy_version = "2026.11.09-1"
+
+[defaults]
+decision = "deny"
+
+[[tools]]
+id            = "mcp://helpdesk/tickets.get"
+operations    = ["read"]
+resource_kind = "db"
+
+[[tools]]
+id            = "mcp://helpdesk/tickets.update"
+operations    = ["database_write"]
+resource_kind = "db"
+
+[[approvers]]
+id     = "oncall-lead"
+scopes = ["approve-ticket-updates"]
+
+[[rules]]
+id         = "read-tickets"
+effect     = "allow"
+agents     = ["support-bot"]
+tools      = ["mcp://helpdesk/tickets.get"]
+operations = ["read"]
+resources  = ["db:helpdesk/tickets"]
+
+[[rules]]
+id         = "approve-ticket-updates"
+effect     = "require_approval"
+agents     = ["support-bot"]
+tools      = ["mcp://helpdesk/tickets.update"]
+operations = ["database_write"]
+resources  = ["db:helpdesk/tickets"]
+
+[[rules]]
+id         = "no-prod-ticket-updates"
+effect     = "deny"
+agents     = ["*"]
+tools      = ["mcp://helpdesk/tickets.update"]
+operations = ["database_write"]
+resources  = ["db:helpdesk/tickets"]
+
+[rules.conditions]
+environment = ["prod"]
+```
+
+```python
+from rig_sentinel.policy import PolicyEngine, load_policy_file
+
+# Strict validation: raises PolicyLoadError or PolicyValidationError on any problem.
+policy = load_policy_file("policy.toml")
+print(policy.sha256)  # record this fingerprint when the policy is reviewed
+
+# In practice, load the reviewed fingerprint from a location the agent cannot modify.
+reviewed_sha256 = policy.sha256
+engine = PolicyEngine(policy, expected_policy_sha256=reviewed_sha256)
+
+record = engine.evaluate({
+    "agent": {"id": "support-bot", "assurance": "authenticated"},
+    "tool": {"id": "mcp://helpdesk/tickets.get"},
+    "operation": "read",
+    "resource": "db:helpdesk/tickets",
+    "context": {"environment": "staging", "session_id": "s-1", "request_id": "r-1"},
+})
+
+print(record.decision.value, record.reason_code.value)  # ALLOW RULE_ALLOW
+print(record.allowed, record.enforced)                  # True False
+```
+
+With the same policy and `support-bot` as the agent:
+
+| Request | Decision | Reason code |
+|---|---|---|
+| `read` `db:helpdesk/tickets` with `tickets.get`, staging | `ALLOW` | `RULE_ALLOW` |
+| `read` `db:helpdesk/users` with `tickets.get`, staging | `DENY` | `DEFAULT_DENY` |
+| `database_write` `db:helpdesk/tickets` with `tickets.update`, staging | `REQUIRE_APPROVAL` | `RULE_REQUIRES_APPROVAL` |
+| same, in `prod` | `DENY` | `RULE_DENY` |
+| any request with the unregistered `mcp://helpdesk/tickets.delete` | `DENY` | `UNKNOWN_TOOL` |
+
+`record.to_dict()` returns the full decision record (`rig.decision/v1`).
+
+### Current security limitations
+
+- **No enforcement.** Decisions are advisory until a trusted adapter refuses to run a
+  tool unless the decision is `ALLOW`. Do not describe the engine as protecting a system.
+- **No authentication.** Agent identity, assurance, tool identity, resource and context
+  labels are supplied by the caller and are not verified.
+- **Names, not objects.** The engine cannot tell whether two names refer to the same
+  file, table or secret. Symbolic links, junctions, hard links, mounts, sibling or
+  cross-database aliases, and changes between decision and use are not covered.
+- **No prompt-injection detection, approval processing, audit log or policy signing.**
+
+Details: [docs/POLICY_ENGINE.md](docs/POLICY_ENGINE.md) and
+[docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
+
 ## Limitations
 
 RIG Sentinel v0.1.0 is a **static analyzer**. In short:
@@ -354,6 +494,8 @@ Details: [docs/ROADMAP.md](docs/ROADMAP.md).
 | [Architecture](docs/ARCHITECTURE.md) | Components and data flow |
 | [Limitations](docs/LIMITATIONS.md) | Scope and interpretation of results |
 | [Testing](docs/TESTING.md) | Test suite layout and conventions |
+| [Policy engine](docs/POLICY_ENGINE.md) | Policy decision engine (Genesis B2-M1, unreleased): schema, decisions, limitations |
+| [Threat model](docs/THREAT_MODEL.md) | Threats, trust boundaries and residual risks for the policy engine |
 | [Detection issues](docs/DETECTION_ISSUES.md) | Reporting false positives and false negatives |
 | [Roadmap](docs/ROADMAP.md) | Phases, Community and Enterprise direction |
 | [Vision](docs/VISION.md) | Product vision |
