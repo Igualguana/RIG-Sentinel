@@ -103,8 +103,11 @@ def test_digest_pinning():
 
 def test_policy_substitution_is_detected():
     original = load_policy_text(BASELINE_POLICY)
-    substituted = BASELINE_POLICY.replace('decision = "deny"', 'decision = "require_approval"').replace(
-        'scopes = ["approve-ticket-updates", "approve-customer-mail"]', 'scopes = ["*"]'
+    # A valid but more permissive policy (also allows reads in prod).
+    substituted = BASELINE_POLICY.replace(
+        'environment = ["dev", "staging"]', 'environment = ["dev", "staging", "prod"]'
     )
+    assert substituted != BASELINE_POLICY
+    assert load_policy_text(substituted).sha256 != original.sha256  # valid on its own
     with pytest.raises(PolicyDigestMismatchError):
         load_policy_text(substituted, expected_sha256=original.sha256)

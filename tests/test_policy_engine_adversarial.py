@@ -369,6 +369,7 @@ _POOL = {
     "operation": [o.value for o in OperationClass] + ["READ", "launch"],
     "resource": [
         "db:helpdesk/tickets", "email:customer.example.com", "fs:/srv/workspace/a",
+        "fs:/srv/workspace/src/a",
         "fs:/srv/workspace/.rig-sentinel/p", "shell:git", "url:https://docs.example.com/a",
         "url:https://evil.example/a", "fs:/a/../b", "none:",
     ],
@@ -377,11 +378,31 @@ _POOL = {
 }
 
 
+# Requests known to be allowed by the baseline policy. The fuzzer mutates
+# 0-2 fields of one of them ("near-miss" fuzzing), so it explores the
+# boundary of every allow rule instead of reaching ALLOW only by chance.
+_ALLOWED_BASES = (
+    dict(agent="support-bot", assurance="authenticated", tool="mcp://helpdesk/tickets.get",
+         operation="read", resource="db:helpdesk/tickets", environment="staging", labels=[]),
+    dict(agent="build-agent", assurance="asserted", tool="mcp://fs/write_file",
+         operation="write", resource="fs:/srv/workspace/src/a", environment="dev", labels=[]),
+    dict(agent="research-bot", assurance="asserted", tool="mcp://web/fetch",
+         operation="network", resource="url:https://docs.example.com/a", environment="prod",
+         labels=[]),
+)
+
+
 def test_fuzzed_requests_never_raise_and_allow_only_via_allow_rules(engine):
+    for base in _ALLOWED_BASES:
+        assert engine.evaluate(make_request(**base)).decision is Decision.ALLOW
+
     rng = random.Random(1109)
     allowed = 0
     for _ in range(2500):
-        request = make_request(**{key: rng.choice(values) for key, values in _POOL.items()})
+        fields = dict(rng.choice(_ALLOWED_BASES))
+        for key in rng.sample(sorted(_POOL), rng.randint(0, 2)):
+            fields[key] = rng.choice(_POOL[key])
+        request = make_request(**fields)
         record = engine.evaluate(request)
         assert record.decision in set(Decision)
         assert record.enforced is False

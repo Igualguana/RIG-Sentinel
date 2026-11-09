@@ -1,13 +1,25 @@
 """Typed resource identifiers and their canonical form.
 
 Resources are written as ``<kind>:<value>``. The engine parses and
-canonicalizes every resource itself instead of trusting the caller's string,
-so that two spellings of the same target always compare equal and spellings
-that are ambiguous across platforms are rejected.
+canonicalizes every resource itself instead of trusting the caller's string.
+Canonicalization is purely *lexical*: it removes redundant spelling (``//``,
+``.``, a trailing ``/``, default ports, host-name case) and rejects spellings
+that are ambiguous across platforms.
 
-The checks here are purely lexical. No filesystem, DNS or network lookup is
-performed (symlinks, mount points and name resolution are runtime concerns
-for a future enforcement adapter).
+What a resource identifier is - and is not
+-------------------------------------------
+An ``fs:`` identifier is a **normalized absolute POSIX-style path string**.
+It names a *path*, not a filesystem *object*. The engine never touches the
+filesystem, so it cannot know whether two different identifiers refer to the
+same object, for example through case-insensitive lookup, 8.3 short names,
+symbolic links, junctions, hard links or mount aliases. The same holds for
+``url:`` paths on servers that treat paths case-insensitively.
+
+Identifiers are compared byte-for-byte; matching is case-sensitive on every
+platform. The policy validator therefore rejects policies whose correctness
+would depend on recognizing aliases (see ``validation.py``), and resolving
+the real object behind an identifier is the job of a trusted enforcement
+adapter (Genesis D).
 """
 
 from __future__ import annotations
@@ -20,6 +32,16 @@ from rig_sentinel.policy.identifiers import is_identifier
 
 MAX_RESOURCE_LENGTH = 2048
 MAX_SECRET_SEGMENTS = 16
+MAX_FS_SEGMENT_LENGTH = 255  # common NAME_MAX
+
+# Names that Windows maps to devices in any directory, with or without an
+# extension (for example "nul.txt"). Such a segment does not name a regular
+# file on Windows, so it is rejected as ambiguous on every platform.
+_WINDOWS_DEVICE_STEMS = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{digit}" for digit in range(10)}
+    | {f"lpt{digit}" for digit in range(10)}
+)
 
 
 class ResourceKind(StrEnum):
@@ -115,8 +137,12 @@ def parse_resource(value: object) -> ResourceRef:
     return _PARSERS[kind](rest)
 
 
-def _path_segments(path: str) -> tuple[str, ...]:
-    """Lexically normalize an absolute POSIX-style path."""
+def _path_segments(path: str, *, filesystem: bool) -> tuple[str, ...]:
+    """Lexically normalize an absolute POSIX-style path.
+
+    ``filesystem`` enables the extra checks that only apply to ``fs:`` paths
+    (segment length and Windows device names).
+    """
     if not path.startswith("/"):
         raise ResourceError("path must be absolute")
     if path.startswith("//"):
@@ -133,6 +159,11 @@ def _path_segments(path: str) -> tuple[str, ...]:
             raise ResourceError("path segments must not end with '.'")
         if _PATH_SEGMENT_RE.fullmatch(segment) is None:
             raise ResourceError("path segment contains unsupported characters")
+        if filesystem:
+            if len(segment) > MAX_FS_SEGMENT_LENGTH:
+                raise ResourceError("path segment is too long")
+            if segment.split(".", 1)[0].lower() in _WINDOWS_DEVICE_STEMS:
+                raise ResourceError("path segment is a reserved device name")
         segments.append(segment)
     return tuple(segments)
 
@@ -159,7 +190,7 @@ def _host(value: str, *, allow_ip: bool) -> str:
 
 
 def _parse_fs(rest: str) -> ResourceRef:
-    return ResourceRef(ResourceKind.FS, "", _path_segments(rest))
+    return ResourceRef(ResourceKind.FS, "", _path_segments(rest, filesystem=True))
 
 
 def _parse_url(rest: str) -> ResourceRef:
@@ -186,7 +217,7 @@ def _parse_url(rest: str) -> ResourceRef:
         if port != _DEFAULT_PORTS[scheme]:
             authority += f":{port}"
 
-    segments = _path_segments(path) if path else ()
+    segments = _path_segments(path, filesystem=False) if path else ()
     return ResourceRef(ResourceKind.URL, authority, segments)
 
 

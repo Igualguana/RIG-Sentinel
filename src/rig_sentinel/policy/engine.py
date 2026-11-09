@@ -1,8 +1,17 @@
 """Deterministic, fail-closed policy decision point.
 
 ``PolicyEngine.evaluate`` is a pure function of (policy, request, clock):
-it performs no I/O, invokes no tools and never raises for bad input. Every
-problem produces a DENY record with a specific reason code.
+it performs no I/O and invokes no tools. Every problem that surfaces as an
+``Exception`` (including ``RecursionError`` and ``MemoryError``) produces a
+DENY record. ``BaseException`` subclasses that are not ``Exception``
+(``KeyboardInterrupt``, ``SystemExit``, ``GeneratorExit``) propagate, and a
+process can also die or hang without returning at all. Callers must
+therefore treat *anything other than a returned ALLOW record* as "do not
+invoke the tool".
+
+The engine does not authenticate anything. Agent identity, assurance level,
+tool identity, manifest digest, resource and context labels are taken from
+the request as supplied by the caller (a trusted enforcement adapter).
 
 Decision order:
 
@@ -144,7 +153,12 @@ class PolicyEngine:
         return self._policy is not None
 
     def evaluate(self, request: AuthorizationRequest | Mapping[str, object]) -> DecisionRecord:
-        """Return a decision for ``request``. Never raises ``Exception``."""
+        """Return a decision for ``request``.
+
+        ``Exception`` subclasses raised during evaluation are converted to
+        ``DENY / EVALUATION_ERROR``; other ``BaseException`` subclasses
+        propagate (see the module docstring).
+        """
         try:
             return self._evaluate(request)
         except Exception as exc:  # fail closed

@@ -90,11 +90,19 @@ def test_rejected_resources(raw):
 
 
 def test_length_limit():
-    ok = "fs:/" + "a" * 2044
+    ok = "fs:/" + "/".join(["a" * 254] * 8) + "/" + "a" * 4
     assert len(ok) == 2048
     parse_resource(ok)
     with pytest.raises(ResourceError):
         parse_resource(ok + "a")
+
+
+def test_fs_segment_length_limit():
+    parse_resource("fs:/srv/" + "a" * 255)
+    with pytest.raises(ResourceError):
+        parse_resource("fs:/srv/" + "a" * 256)
+    # The segment limit is filesystem-specific; URL paths are not affected.
+    parse_resource("url:https://docs.example.com/" + "a" * 300)
 
 
 def test_kinds_are_typed():

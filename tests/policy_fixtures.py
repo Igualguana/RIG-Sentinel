@@ -113,7 +113,7 @@ effect = "allow"
 agents = ["build-agent"]
 tools = ["mcp://fs/write_file"]
 operations = ["write"]
-resources = ["fs:/srv/workspace/**"]
+resources = ["fs:/srv/workspace/src/**"]
 """,
     """\
 [[rules]]

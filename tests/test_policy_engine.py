@@ -121,7 +121,10 @@ def test_deny_overrides_allow(engine):
     assert record.matched_rule_ids == ("allow-shell-for-ops", "no-shell-anywhere")
 
 
-def test_narrow_deny_overrides_broad_allow(engine):
+def test_deny_overrides_overlapping_allow_on_same_path(engine):
+    # Same resource matched by an allow and a deny: deny wins. (A deny that
+    # is *nested inside* a broader fs/url allow is rejected by the validator;
+    # see test_policy_hardening.py.)
     record = _decide(
         engine,
         agent="build-agent",
@@ -130,7 +133,15 @@ def test_narrow_deny_overrides_broad_allow(engine):
         resource="fs:/srv/workspace/.rig-sentinel/policy.toml",
     )
     assert record.decision is Decision.DENY
-    assert record.matched_rule_ids == ("protect-policy-dir", "write-workspace")
+    assert record.matched_rule_ids == ("protect-policy-dir",)
+    allowed = _decide(
+        engine,
+        agent="build-agent",
+        tool="mcp://fs/write_file",
+        operation="write",
+        resource="fs:/srv/workspace/src/main.py",
+    )
+    assert allowed.decision is Decision.ALLOW
 
 
 def test_require_approval_overrides_allow(engine):

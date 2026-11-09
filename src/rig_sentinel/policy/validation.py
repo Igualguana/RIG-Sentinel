@@ -11,7 +11,7 @@ rejected policy cannot leak sensitive content through error messages.
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 from rig_sentinel.policy.canonical import POLICY_DIGEST_DOMAIN, digest
@@ -553,6 +553,255 @@ def _approvers(
 
 
 # ---------------------------------------------------------------------------
+# fs:/url: path structure (alias safety)
+# ---------------------------------------------------------------------------
+#
+# The engine matches path identifiers byte-for-byte and cannot know whether
+# two spellings name the same object (case-insensitive lookup, 8.3 short
+# names, symbolic links, junctions, hard links, mounts). That is harmless for
+# *allow* rules: an unrecognized spelling matches no allow and falls to the
+# default deny. It is unsafe when a more restrictive rule is carved out of a
+# broader allow: an alias of the protected path is still inside the allow but
+# no longer inside the deny, so it is ALLOWED.
+#
+# Three fail-closed constraints therefore apply to fs: and url: patterns
+# (effect strength: deny > require_approval > allow):
+#
+# * PATH_CASE_CONFLICT - the policy may not spell the same path prefix with
+#   different letter case in different places (for example "/srv/Data" and
+#   "/srv/data"). Such a policy is ambiguous across platforms.
+# * UNSAFE_PATH_CARVE_OUT - a deny or require_approval rule may not cover a
+#   path that lies strictly inside the resource pattern of an allow rule whose
+#   agents, tools and operations overlap with it (alias -> ALLOW).
+# * ALIAS_DOWNGRADE_RISK - a deny rule may not cover a path that lies strictly
+#   inside an overlapping require_approval rule, nor sit under a
+#   require_approval *default* (alias -> REQUIRE_APPROVAL instead of DENY).
+#
+# Rule conditions are ignored (the checks assume they can hold at the same
+# time). A restrictive pattern covering the whole fs: namespace ("fs:/**")
+# cannot be side-stepped by any fs: alias and is exempt; url: patterns are
+# always host-specific and never exempt (host names have aliases too).
+#
+# db: and secret: identifiers are NOT covered: their grammar admits aliases
+# (for example "db:crm/public.salaries" vs "db:crm/salaries", or a secret
+# store's alternate API path), but restricting them is a pending decision.
+#
+# Matching itself is unchanged: these checks only reject policies.
+
+_ALIAS_SENSITIVE_KINDS = frozenset({ResourceKind.FS, ResourceKind.URL})
+
+
+class _PathNode:
+    __slots__ = ("children", "spelling", "prefix_rules")
+
+    def __init__(self, spelling: str) -> None:
+        self.children: dict[str, _PathNode] = {}
+        self.spelling = spelling
+        self.prefix_rules: set[int] = set()
+
+
+@dataclass(frozen=True)
+class _RuleScope:
+    agents: frozenset[str] | None  # None = any
+    operations: frozenset[str] | None
+    any_tool: bool
+    exact_tools: frozenset[str]
+    server_prefixes: frozenset[str]  # from "<scheme>://<server>/*"
+    exact_tool_servers: frozenset[str]  # "<scheme>://<server>/" of exact ids
+
+
+def _rule_scope(rule: Rule) -> _RuleScope:
+    exact = frozenset(tool for tool in rule.tools if tool != WILDCARD and not tool.endswith("/*"))
+    return _RuleScope(
+        agents=None if WILDCARD in rule.agents else frozenset(rule.agents),
+        operations=None if WILDCARD in rule.operations else frozenset(rule.operations),
+        any_tool=WILDCARD in rule.tools,
+        exact_tools=exact,
+        server_prefixes=frozenset(tool[:-1] for tool in rule.tools if tool.endswith("/*")),
+        exact_tool_servers=frozenset(
+            "{}://{}/".format(*split_tool_id(tool)[:2]) for tool in exact
+        ),
+    )
+
+
+def _scopes_overlap(a: _RuleScope, b: _RuleScope) -> bool:
+    if a.agents is not None and b.agents is not None and not a.agents & b.agents:
+        return False
+    if (
+        a.operations is not None
+        and b.operations is not None
+        and not a.operations & b.operations
+    ):
+        return False
+    if a.any_tool or b.any_tool:
+        return True
+    return bool(
+        a.exact_tools & b.exact_tools
+        or a.server_prefixes & b.server_prefixes
+        or a.server_prefixes & b.exact_tool_servers
+        or b.server_prefixes & a.exact_tool_servers
+    )
+
+
+def _sensitive_patterns(rule: Rule) -> list[ResourcePattern]:
+    patterns: list[ResourcePattern] = []
+    for text in rule.resources:
+        if text == WILDCARD:
+            continue
+        pattern = parse_resource_pattern(text)
+        if pattern.ref is not None and pattern.ref.kind in _ALIAS_SENSITIVE_KINDS:
+            patterns.append(pattern)
+    return patterns
+
+
+def _covers_whole_kind(pattern: ResourcePattern) -> bool:
+    """True for "fs:/**": every fs: identifier, and so every fs: alias, matches."""
+    ref = pattern.ref
+    return (
+        pattern.prefix
+        and ref is not None
+        and ref.kind == ResourceKind.FS
+        and not ref.segments
+    )
+
+
+def _restrictive_patterns(rule: Rule) -> list[ResourcePattern]:
+    """fs:/url: patterns of a restrictive rule that an alias could escape."""
+    return [
+        pattern for pattern in _sensitive_patterns(rule) if not _covers_whole_kind(pattern)
+    ]
+
+
+def find_path_carve_outs(
+    rules: tuple[Rule, ...] | list[Rule],
+    *,
+    permissive: Effect,
+    restrictive: frozenset[Effect],
+) -> list[tuple[int, int]]:
+    """Return ``(restrictive_index, permissive_index)`` pairs.
+
+    A pair means: rule ``restrictive_index`` (with an effect in
+    ``restrictive``) protects an fs:/url: path that lies strictly inside a
+    resource pattern of rule ``permissive_index`` (effect ``permissive``),
+    and the two rules can apply to the same agent, tool and operation. At
+    most one pair is reported per restrictive rule.
+
+    Cost is linear in the total number of path segments plus the number of
+    candidate rule pairs, both bounded by the policy size limits.
+    """
+    roots: dict[tuple[ResourceKind, str], _PathNode] = {}
+    any_resource: set[int] = set()
+
+    for index, rule in enumerate(rules):
+        if rule.effect is not permissive:
+            continue
+        if WILDCARD in rule.resources:
+            any_resource.add(index)
+        for pattern in _sensitive_patterns(rule):
+            if not pattern.prefix:
+                continue  # an exact pattern cannot contain another path
+            ref = pattern.ref
+            node = roots.setdefault((ref.kind, ref.authority), _PathNode(""))
+            for segment in ref.segments:
+                node = node.children.setdefault(segment.lower(), _PathNode(segment))
+            node.prefix_rules.add(index)
+
+    scopes: dict[int, _RuleScope] = {}
+
+    def scope(index: int) -> _RuleScope:
+        if index not in scopes:
+            scopes[index] = _rule_scope(rules[index])
+        return scopes[index]
+
+    pairs: list[tuple[int, int]] = []
+    for index, rule in enumerate(rules):
+        if rule.effect not in restrictive:
+            continue
+        patterns = _restrictive_patterns(rule)
+        if not patterns:
+            continue
+        candidates = set(any_resource)
+        for pattern in patterns:
+            ref = pattern.ref
+            node = roots.get((ref.kind, ref.authority))
+            # Collect allow prefixes at every *strict* ancestor of this path.
+            for segment in ref.segments:
+                if node is None:
+                    break
+                candidates |= node.prefix_rules
+                node = node.children.get(segment.lower())
+        candidates.discard(index)
+        for other in sorted(candidates):
+            if _scopes_overlap(scope(index), scope(other)):
+                pairs.append((index, other))
+                break
+    return pairs
+
+
+def _path_issues(rules: list[Rule], default_decision: Effect, issues: _Issues) -> None:
+    # 1. Consistent spelling of every fs:/url: path prefix in the policy.
+    roots: dict[tuple[ResourceKind, str], _PathNode] = {}
+    for index, rule in enumerate(rules):
+        for pattern in _sensitive_patterns(rule):
+            ref = pattern.ref
+            node = roots.setdefault((ref.kind, ref.authority), _PathNode(""))
+            for segment in ref.segments:
+                child = node.children.get(segment.lower())
+                if child is None:
+                    child = node.children[segment.lower()] = _PathNode(segment)
+                elif child.spelling != segment:
+                    issues.add(
+                        IssueCode.PATH_CASE_CONFLICT,
+                        f"rules[{index}].resources",
+                        "path differs only in letter case from a path used elsewhere "
+                        "in the policy; such paths may name the same object",
+                    )
+                    break
+                node = child
+    if issues:
+        return
+
+    # 2. No deny / require_approval carve-outs inside a broader allow.
+    for restrictive_index, permissive_index in find_path_carve_outs(
+        rules,
+        permissive=Effect.ALLOW,
+        restrictive=frozenset({Effect.DENY, Effect.REQUIRE_APPROVAL}),
+    ):
+        issues.add(
+            IssueCode.UNSAFE_PATH_CARVE_OUT,
+            f"rules[{restrictive_index}].resources",
+            f"protects a path inside the broader allow of rules[{permissive_index}]; "
+            "an alternate spelling of the protected path (letter case, short name, "
+            "link) would match the allow but not this rule. List the allowed paths "
+            "explicitly instead of carving exceptions out of a broader allow",
+        )
+
+    # 3. No deny carve-outs inside a broader require_approval (rule or default).
+    for restrictive_index, permissive_index in find_path_carve_outs(
+        rules,
+        permissive=Effect.REQUIRE_APPROVAL,
+        restrictive=frozenset({Effect.DENY}),
+    ):
+        issues.add(
+            IssueCode.ALIAS_DOWNGRADE_RISK,
+            f"rules[{restrictive_index}].resources",
+            f"denies a path inside the broader require_approval of "
+            f"rules[{permissive_index}]; an alternate spelling of the denied path "
+            "would get REQUIRE_APPROVAL instead of DENY",
+        )
+    if default_decision is Effect.REQUIRE_APPROVAL:
+        for index, rule in enumerate(rules):
+            if rule.effect is Effect.DENY and _restrictive_patterns(rule):
+                issues.add(
+                    IssueCode.ALIAS_DOWNGRADE_RISK,
+                    f"rules[{index}].resources",
+                    "denies an fs:/url: path while the default decision is "
+                    "require_approval; an alternate spelling of the denied path would "
+                    "get REQUIRE_APPROVAL instead of DENY",
+                )
+
+
+# ---------------------------------------------------------------------------
 # Entry points
 # ---------------------------------------------------------------------------
 
@@ -630,6 +879,11 @@ def validate_policy(data: object) -> Policy:
             "defaults.decision",
             "default 'require_approval' needs an approver with scopes = ['*']",
         )
+
+    # Structural path checks need every rule; they run once per-field
+    # validation has passed, so rule indices match the policy file.
+    if not issues:
+        _path_issues(rules, defaults.decision, issues)
 
     if issues:
         raise PolicyValidationError(tuple(issues.items))

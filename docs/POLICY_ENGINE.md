@@ -19,8 +19,9 @@ tool *T* on resource *R*"), it returns one of three decisions:
 |---|---|
 | A pure function: `(policy, request, clock) → decision record` | A firewall, proxy or runtime monitor |
 | Deterministic, order-independent and fail-closed | A prompt-injection or behavior detector |
-| Independent of the scanner, the CLI and any MCP SDK | An authenticator (it trusts the adapter's identity claims) |
+| Independent of the scanner, the CLI and any MCP SDK | An authenticator: it trusts the identity, assurance and context the caller supplies |
 | A library a trusted adapter can call before invoking a tool | Something that blocks, executes or approves anything itself |
+| A matcher of *names* (path and URL strings) | A resolver of *objects*: it cannot tell whether two paths are the same file |
 
 Every decision record contains **`"enforced": false`**. A decision only has an effect if a
 separate, trusted **enforcement adapter** checks it *before* invoking a tool and refuses to
@@ -40,7 +41,7 @@ policy.toml ──▶ loader.py ──▶ validation.py ──▶ Policy (frozen
                 digest pin                          engine.py: PolicyEngine
                                                      re-validates the policy,
 request (dict or AuthorizationRequest) ───────────▶  evaluate(request) ──▶ DecisionRecord
-                                                     (never raises; no I/O)
+                                                     (Exception → DENY; no I/O)
 ```
 
 | Module | Responsibility |
@@ -150,9 +151,25 @@ categories reported by the v0.1.0 scanner. Every class except `read` is *protect
   `require_approval` rules without an approver in scope, conflicting label conditions,
   and size/count limits (256 KiB, 1000 rules, 500 tools, 64 patterns per field).
 - Loader: UTF-8 only (no BOM), malformed TOML rejected, nesting-depth errors rejected.
-- `lint_policy()` returns non-blocking warnings: `BROAD_ALLOW` (all agents and all tools),
-  `HIGH_RISK_ALLOW` (execute/financial/credential/admin), `UNUSED_TOOL`,
-  `UNPROTECTED_WRITE_TOOL`.
+- Path-structure checks on `fs:` and `url:` patterns, which keep policies alias-safe (see
+  [Alias safety](#alias-safety-fs-and-url-paths)):
+  - `PATH_CASE_CONFLICT`: the same path prefix is spelled with different letter case in
+    different places, for example `/srv/Data` and `/srv/data`.
+  - `UNSAFE_PATH_CARVE_OUT`: a `deny` or `require_approval` rule protects a path that
+    lies strictly inside the resource pattern of an `allow` rule whose agents, tools and
+    operations overlap with it.
+  - `ALIAS_DOWNGRADE_RISK`: a `deny` rule protects a path that lies strictly inside an
+    overlapping `require_approval` rule, or denies an `fs:`/`url:` path while
+    `defaults.decision = "require_approval"`. An alias would get REQUIRE_APPROVAL instead
+    of DENY.
+
+  These checks run after all per-field checks pass, so a policy with field errors
+  reports those first.
+- `lint_policy()` returns non-blocking warnings:
+  - `BROAD_ALLOW`: an allow covering all agents and all tools.
+  - `HIGH_RISK_ALLOW`: an allow covering execute, financial, credential or admin operations.
+  - `UNUSED_TOOL`: a registered tool that no rule refers to.
+  - `UNPROTECTED_WRITE_TOOL`: a non-read tool marked `protected = false`.
 
 ### Policy fingerprint and pinning
 
@@ -174,7 +191,7 @@ characters.
 
 | Kind | Form | Canonicalization | Rejected |
 |---|---|---|---|
-| `fs` | `fs:/abs/path` | `//` and `.` collapsed, trailing `/` removed | relative paths, leading `//`, `..`, `\`, `%`, `:`, segments ending in `.`, wildcards |
+| `fs` | `fs:/abs/path` | `//` and `.` collapsed, trailing `/` removed | relative paths, leading `//` (UNC), `..`, `\`, `%`, `:` (drive letters, NTFS streams), segments ending in `.`, segments over 255 characters, Windows device names (`CON`, `PRN`, `AUX`, `NUL`, `COM0`–`COM9`, `LPT0`–`LPT9`, in any case, with or without an extension), wildcards |
 | `db` | `db:<database>[/<table>]` | — | uppercase, more than two parts |
 | `url` | `url:http(s)://host[:port][/path]` | host lowercased, default port removed, path as `fs` | credentials (`@`), query, fragment, `%`, `\`, other schemes, IPv6, numeric/hex host names like `1.2.3` or `0x7f000001` |
 | `shell` | `shell:<command-name>` | — | paths, arguments, whitespace |
@@ -187,6 +204,111 @@ Resource patterns in rules: `*`, an exact resource, or a hierarchical prefix end
 below it **at segment boundaries**: `fs:/srv/data/**` matches `fs:/srv/data` and
 `fs:/srv/data/a/b`, but not `fs:/srv/database`. No other wildcards or regular expressions
 exist.
+
+### What an `fs:` identifier means in M1
+
+An `fs:` resource is a **normalized absolute POSIX-style path string**: a name, not a
+filesystem object. The engine never touches the filesystem and **cannot prove whether two
+different identifiers refer to the same object**. Aliases it cannot see include:
+- letter case on case-insensitive volumes (the NTFS and APFS defaults, though both can
+  be case-sensitive)
+- 8.3 short names on NTFS (`SECRE~1`, or any short name an administrator assigns, with
+  or without `~`)
+- symbolic links, junctions, hard links, bind mounts and mount points
+
+Matching is **byte-for-byte and case-sensitive on every platform**. M1 does not fold case,
+expand short names or resolve links, and it makes no claim about which filesystem a path
+lives on. The same applies to `url:` paths, which some servers treat case-insensitively.
+
+### Alias safety: `fs:` and `url:` paths
+
+Since the engine compares names, the shape of a policy determines whether aliases fail
+open or closed:
+
+- **Allowlists fail closed.** With `allow fs:/srv/public/**`, any spelling the engine does
+  not recognize (`fs:/srv/Secret/x`, `fs:/srv/SECRET~1/x`, even `fs:/srv/PUBLIC/x`)
+  matches no allow and gets `DEFAULT_DENY`. A name alias cannot escape an allowed
+  directory, because the allowed prefix is matched exactly and each aliased component
+  resolves inside its parent directory. Links can, which is an adapter concern (below).
+- **Carve-outs fail open.** With `allow fs:/**` plus `deny fs:/srv/secret/**`, the request
+  `fs:/srv/Secret/key` matches the allow but not the deny, so it is **ALLOWED**, although
+  on a case-insensitive volume it names the protected file (finding F-1).
+
+M1 therefore rejects unsafe shapes instead of guessing filesystem semantics. The rule:
+on `fs:` and `url:` paths, a rule may not be nested **strictly inside** an overlapping rule,
+or the default, that has a **weaker** effect (strength: deny > require_approval > allow).
+
+| Policy | Result |
+|---|---|
+| `allow fs:/**` + `deny fs:/srv/secret/**` (same agent/tool/operation) | **rejected**: `UNSAFE_PATH_CARVE_OUT` |
+| `allow *` + `deny fs:/srv/secret/**` | **rejected**: `UNSAFE_PATH_CARVE_OUT` |
+| `allow fs:/srv/**` + `require_approval fs:/srv/secret/**` | **rejected**: `UNSAFE_PATH_CARVE_OUT` |
+| `allow url:https://app.example.com/**` + `deny url:https://app.example.com/admin/**` | **rejected**: `UNSAFE_PATH_CARVE_OUT` |
+| `allow *` + `deny url:https://admin.example.com/**` (host names have aliases too) | **rejected**: `UNSAFE_PATH_CARVE_OUT` |
+| `require_approval fs:/srv/**` + `deny fs:/srv/secret/**` | **rejected**: `ALIAS_DOWNGRADE_RISK` |
+| `defaults.decision = "require_approval"` + `deny fs:/srv/secret/**` | **rejected**: `ALIAS_DOWNGRADE_RISK` |
+| `allow fs:/srv/data/**` + `deny fs:/srv/Data/secret/**` | **rejected**: `PATH_CASE_CONFLICT` |
+| `allow fs:/srv/public/**` + `deny fs:/srv/secret/**` (siblings) | accepted |
+| `allow fs:/srv/public/**` + `deny fs:/srv/**` (deny is broader) | accepted |
+| `allow *` + `deny fs:/**`, or `deny fs:/**` under a `require_approval` default (every `fs:` alias is still under `fs:/**`) | accepted |
+| allow, approval and deny rules for disjoint agents, tools or operations | accepted |
+
+Express the allowed set positively: list the directories an agent may use instead of
+granting a broad allow and subtracting exceptions. Rule `conditions` are ignored by these
+checks, which assume the conditions can hold at the same time. Matching semantics did not
+change: the checks only reject policies, with explicit error codes.
+
+**Compatibility consequences** (on every platform, including case-sensitive Linux, because
+links create aliases everywhere):
+- "Allow everything under X except Y" cannot be written for `fs:`/`url:` paths, whether
+  the exception is a deny or an approval rule.
+- A policy with `defaults.decision = "require_approval"` cannot contain narrow `fs:`/`url:`
+  deny rules. Use the `deny` default, or deny all of `fs:/**`.
+- A policy may not mention the same path with different letter case.
+- These policies are now rejected with an explicit error. Earlier development builds
+  accepted them; no released version did.
+
+### Kinds that are not alias-verified: `db:`, `secret:`, `shell:`, `email:`
+
+The path checks above cover only `fs:` and `url:`. **Carve-outs on the other kinds are still
+accepted, but they are not alias-safe**, and lowercase-only identifiers do not change that:
+
+| Kind | What the identifier is | Aliases the engine cannot see (examples) |
+|---|---|---|
+| `db:` | Opaque `database[/table]` names; the engine knows nothing of schemas, views, synonyms or quoting | `db:crm/public.salaries` vs `db:crm/salaries` (schema-qualified; accepted by the grammar), views, synonyms, database links, case-folding of unquoted identifiers, quoted mixed-case names (cannot be expressed at all) |
+| `secret:` | Opaque `/`-separated names | Alternate API paths of the same secret (for example a key-value store's `data/` prefix), mount aliases, case-insensitive secret stores |
+| `shell:` | A command name | Other commands with the same effect (`unlink` vs `rm`), shells that run anything |
+| `email:` | A domain | Subdomains, alternative domains of the same recipient, forwarding |
+
+`tests/test_policy_hardening.py::test_non_path_carve_outs_are_accepted_but_not_alias_safe`
+demonstrates the gap. With `allow db:crm/**` + `deny db:crm/salaries`, the request
+`db:crm/public.salaries` is **ALLOWED**.
+
+**Safe policy for these kinds in M1:** use allowlists only (allow the specific tables,
+secrets, commands or domains), and do not rely on deny carve-outs or on deny lists of
+commands or domains.
+
+**Proposed change, awaiting maintainer approval and not implemented:** extend
+`UNSAFE_PATH_CARVE_OUT` and `ALIAS_DOWNGRADE_RISK` to `db:` and `secret:`. Any `db:`/`secret:`
+deny or approval rule nested in an overlapping weaker rule would then be rejected. For
+`shell:`/`email:`, alias relationships are semantic, not structural, so the proposal is
+documentation plus allowlist-only guidance.
+
+**The `~` character is still accepted.** Rejecting it would not remove short-name aliases,
+since administrators can assign short names without `~`, and would break common POSIX
+names such as `notes~` or `~user` URL paths. With carve-outs rejected, a `~` alias can only
+reach `DEFAULT_DENY`.
+
+### Unicode
+
+Resources, identifiers, tool ids, labels and policy patterns are **ASCII-only**. Non-ASCII
+input is rejected, never normalized. NFC and NFD forms, look-alike letters (Cyrillic `а`,
+Greek `ο`), full-width forms, zero-width and bidirectional control characters, the BOM,
+no-break spaces, and characters whose case mapping produces ASCII (`K` KELVIN SIGN → `k`,
+`ſ` → `S`) all produce `DENY` (`INVALID_IDENTITY`, `INVALID_TOOL_ID`, `INVALID_RESOURCE`,
+`INVALID_REQUEST` or `UNKNOWN_OPERATION`) for requests, and a validation error for
+policies. Policy and rule `description` fields may contain printable Unicode, since they
+are never matched.
 
 ## Decision precedence
 
@@ -212,20 +334,50 @@ Rule order in the file never matters, and rules have no priority field. A narrow
 always beats a broad `allow`; an approval requirement always beats an `allow`; nothing
 beats a `deny`. To make an exception, write a narrower deny, not a broader allow.
 
-### Fail-closed semantics
+### Fail-closed semantics (exact boundary)
 
-- `PolicyEngine.evaluate()` never raises `Exception`. Any unexpected error (a failing
-  clock, a hostile mapping, an internal bug) returns `DENY / EVALUATION_ERROR` with
-  `error_type` set to the exception class name only. The message is never recorded,
-  because it may contain request data.
-- If even building that record fails, a pre-built `DENY` record is returned.
+What is guaranteed, and covered by tests:
+
+- Any **`Exception` subclass** raised inside `PolicyEngine.evaluate()` returns
+  `DENY / EVALUATION_ERROR`. This covers a failing clock, a hostile mapping, an internal
+  bug, `RecursionError` and `MemoryError`. `error_type` holds the exception class name
+  only; the message is never recorded, because it may contain request data.
+- If building that error record also fails, a `DENY` record built at import time is
+  returned.
 - Requests are copied once and fully re-validated, including typed
   `AuthorizationRequest` objects, so mutating the input during or after evaluation has
   no effect.
-- The policy passed to `PolicyEngine` is re-validated; a tampered `Policy` object
-  results in deny-all.
-- `BaseException` (`KeyboardInterrupt`, `SystemExit`) propagates. **Adapters must treat
-  anything other than a returned `ALLOW` record as "do not invoke".**
+- The policy passed to `PolicyEngine` is re-validated. A tampered `Policy` object, or any
+  `Exception` during construction, results in deny-all (`POLICY_UNAVAILABLE`).
+
+What is **not** guaranteed:
+
+- `BaseException` subclasses that are not `Exception` (`KeyboardInterrupt`, `SystemExit`,
+  `GeneratorExit`) propagate out of `evaluate()`; no record is returned.
+- Real memory exhaustion can fail again while the error record is being built, the
+  process can be killed (OOM killer, signals, crashes), and a hostile callable such as a
+  custom clock or `Mapping` can block forever. In these cases there is no decision at
+  all.
+- **Adapters must treat anything other than a returned `ALLOW` record (an exception, a
+  timeout, a crash, `DENY` or `REQUIRE_APPROVAL`) as "do not invoke".** A timeout has to
+  be enforced by the adapter, for example by running evaluation in a separate process;
+  `tomllib` parsing and `evaluate()` cannot be interrupted from inside the same thread.
+
+### Size limits and denial of service
+
+Policies are trusted operator input, but loading is still bounded:
+- 256 KiB per policy; at most 1000 rules, 500 tools, 100 approvers and 64 patterns per
+  field; 1024-character descriptions.
+- Size is checked before parsing. Excessive nesting is rejected (`RecursionError` is
+  turned into `PolicyLoadError`). Every unknown key is reported, but the exception
+  message summarizes at most 10 issues.
+- The path-structure checks use a prefix tree. Their cost is linear in the number of path
+  segments, plus at most one scope comparison per (restrictive rule, allow rule) pair.
+- Requests are bounded too: 2048-character resources, 32 labels, 128-character
+  identifiers. Evaluation cost is at most rules × (tool patterns + resource patterns).
+
+`tests/test_policy_limits.py` exercises the worst cases within these limits. There is
+**no timeout**; see the adapter requirement above.
 
 ## Decision record (`rig.decision/v1`)
 
@@ -278,11 +430,43 @@ These use the baseline policy in `tests/policy_fixtures.py`.
 | `support-bot` e-mails `customer.example.com` (matched by an allow **and** an approval rule) | `REQUIRE_APPROVAL` | `RULE_REQUIRES_APPROVAL` | `approve-customer-mail` |
 | same, with label `untrusted_content_present` | `DENY` | `RULE_DENY` | `tainted-no-egress` |
 | `ops-bot` runs `shell:git` (allowed **and** denied) | `DENY` | `RULE_DENY` | `no-shell-anywhere` |
+| `build-agent` writes `fs:/srv/workspace/src/main.py` | `ALLOW` | `RULE_ALLOW` | `write-workspace` |
 | `build-agent` writes `fs:/srv/workspace/.rig-sentinel/policy.toml` | `DENY` | `RULE_DENY` | `protect-policy-dir` |
 | `build-agent` writes `fs:/srv/workspace/tmp/../.rig-sentinel/policy.toml` | `DENY` | `INVALID_RESOURCE` | — |
 | `support-bot` calls unregistered `mcp://helpdesk/tickets.delete` | `DENY` | `UNKNOWN_TOOL` | — |
 | `support-bot` asks the read-only tool for `database_write` | `DENY` | `OPERATION_NOT_DECLARED` | — |
 | request without an agent | `DENY` | `MISSING_IDENTITY` | — |
+
+## Trust boundary and adapter security contract
+
+The engine evaluates what it is told. Everything in a request is **caller-asserted**:
+`agent.id`, `assurance`, `tool.id`, `manifest_sha256`, `resource`, `environment`, session
+and request ids, and `labels`. The engine has no credential inputs; requests containing
+fields such as `token` or `signature` are rejected as `INVALID_REQUEST`. It performs no
+authentication, signature checks or mTLS. `assurance = "authenticated"` is a label the
+caller sets, not something the engine verified.
+
+A future enforcement adapter (Genesis D) must therefore provide the trust the engine
+lacks. These requirements are design inputs for Genesis D; **none is implemented in M1**:
+
+1. **Authenticated context.** Derive `agent.id` and `assurance` from the adapter's own
+   authentication of the calling process or session, never from model output. Derive
+   `tool.id` and `manifest_sha256` from the adapter's own connection to the tool server.
+   Set `labels` only from trusted detectors.
+2. **Resource extraction.** Map tool arguments to exactly one canonical resource per
+   protected operation; refuse the call if that is ambiguous.
+3. **Resource identity verification.** Before invoking a filesystem tool, resolve the
+   requested path to the real object with OS facilities, without following links outside
+   policy, and obtain the object's canonical path. Re-evaluate the policy for that
+   resolved path. Proceed only if **both** the requested and the resolved identifiers are
+   `ALLOW`. Hard links cannot be detected from a path at all; they need storage-level
+   controls such as permissions or dedicated volumes.
+4. **No time-of-check/time-of-use gap.** Operate on the handle that was resolved and
+   checked; never reopen by name.
+5. **Fail closed.** Invoke a tool only after receiving an `ALLOW` record from this
+   evaluation. Treat exceptions, timeouts, crashes, `DENY` and `REQUIRE_APPROVAL` as "do not
+   invoke". Run evaluation where a timeout can actually be enforced.
+6. **No bypass.** The agent must have no other path to the tool or its credentials.
 
 ## Known limitations (M1)
 
@@ -292,13 +476,35 @@ These use the baseline policy in `tests/policy_fixtures.py`.
   the policy allows. A manipulated request that falls inside the allowed set is allowed.
   Context labels such as `untrusted_content_present` must come from a trusted source
   (Genesis C detectors or the adapter); the engine cannot verify them.
-- **Identity is asserted by the caller.** `assurance` and `agent.id` are whatever the
-  adapter supplies; authentication is outside the engine.
-- **Lexical resource checks only.** No symlink, mount-point, case-folding or DNS
-  resolution. Windows paths, non-ASCII paths, IPv6, URL queries and percent-encoded
-  forms are rejected rather than interpreted. Adapters must invoke tools with the same
-  canonical resource that was evaluated (time-of-check/time-of-use is a Genesis D
-  concern).
+- **No authentication.** Identity, assurance, tool identity, resource and labels are
+  caller-asserted (see the trust boundary above).
+- **Names, not objects.** Matching is lexical and case-sensitive. The engine cannot detect
+  aliases: case-insensitive lookup, 8.3 short names, symbolic links, junctions, hard
+  links, bind mounts, or URL paths that a server treats case-insensitively.
+  Policy-shape checks prevent the alias-to-ALLOW bypass for **carve-outs**. They do not
+  protect allowlists against **links** that point outside an allowed directory, which
+  requires the adapter's resource identity verification.
+- **Rejected rather than interpreted.** Windows paths, non-ASCII paths, IPv6, URL queries
+  and percent-encoded forms are rejected. Some valid names are rejected too: Windows
+  device names such as `con.txt`, and path segments longer than 255 characters.
+- **No "everything except" policies on paths.** Because carve-outs and downgrades are
+  rejected, broad allows or approvals with exceptions on `fs:`/`url:` paths cannot be
+  expressed.
+- **`db:`, `secret:`, `shell:` and `email:` carve-outs are accepted but not alias-safe** (see
+  above). Use allowlists for these kinds.
+
+### Which guarantees belong to M1, and which depend on Genesis D
+
+| Guarantee | M1 (this engine) | Requires Genesis D (adapter) |
+|---|---|---|
+| Decision is deterministic, order-independent, default-deny | ✅ tested | — |
+| `Exception` during evaluation → DENY | ✅ tested | Treat no-decision (crash, timeout, `BaseException`) as "do not invoke" |
+| Policy is rejected rather than accepted when its deny/approval rules depend on recognizing `fs:`/`url:` name aliases | ✅ tested | — |
+| A request naming an alias of a protected **path** is denied or not allowed | ✅ for name aliases under accepted policies (they fail closed to `DEFAULT_DENY`) | **Links, junctions, hard links, mounts**: resolve the real object, check both identifiers, act on the checked handle |
+| Same for `db:`, `secret:`, `shell:`, `email:` | ❌ only with allowlist-only policies | Backend-specific identity resolution |
+| Identity, assurance, tool identity and labels are genuine | ❌ caller-asserted | Authenticated context |
+| No time-of-check/time-of-use gap | ❌ out of scope | Operate on the checked handle |
+| A decision is actually enforced | ❌ `enforced: false` | Adapter enforcement, no bypass path |
 - **Resource extraction is not defined.** Mapping a tool's arguments to a resource is
   the adapter's job (Genesis D).
 - **Per-call decisions only.** Multi-step flows (read a secret, then send it out) need
