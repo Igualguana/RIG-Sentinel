@@ -59,6 +59,11 @@ id = "mcp://vault/read"
 operations = ["read"]
 resource_kind = "secret"
 
+[[tools]]
+id = "mcp://mail/send"
+operations = ["external_send"]
+resource_kind = "email"
+
 [[approvers]]
 id = "lead"
 scopes = ["*"]
@@ -208,46 +213,203 @@ def test_alias_safe_shapes_are_accepted(rules):
     load_policy_text(_policy(*rules))
 
 
-# db:, secret: and shell: carve-outs are still ACCEPTED (changing that needs
-# maintainer approval), but they are NOT alias-safe. These tests pin the
-# current behavior and demonstrate the gap so it cannot be mistaken for a
-# guarantee.
+# ===========================================================================
+# db: and secret: nested-rule validation
+#
+# The alias examples below are PROVIDER-SPECIFIC illustrations (for example a
+# database that resolves "public.salaries" and "salaries" to the same table,
+# or a key-value secret engine that exposes a secret under a "data/" API
+# prefix). The engine does NOT treat them as equivalent and encodes no
+# provider rules; it rejects policy shapes whose safety would depend on
+# recognizing such aliases.
+# ===========================================================================
 
-NOT_ALIAS_VERIFIED = {
-    "db": (
-        (_rule("a", "allow", ["db:crm/**"], tools=["mcp://db/query"]),
-         _rule("d", "deny", ["db:crm/salaries"], tools=["mcp://db/query"])),
-        "mcp://db/query", "read",
-        "db:crm/salaries",
-        # Schema-qualified spelling of the same table in many databases.
-        "db:crm/public.salaries",
-    ),
-    "secret": (
-        (_rule("a", "allow", ["secret:kv/**"], tools=["mcp://vault/read"]),
-         _rule("d", "deny", ["secret:kv/app/key"], tools=["mcp://vault/read"])),
-        "mcp://vault/read", "read",
-        "secret:kv/app/key",
-        # A key-value store's alternate API path for the same secret.
-        "secret:kv/data/app/key",
-    ),
-    "shell": (
-        (_rule("a", "allow", ["*"], tools=["mcp://shell/run"], operations=["execute"]),
-         _rule("d", "deny", ["shell:rm"], tools=["mcp://shell/run"], operations=["execute"])),
-        "mcp://shell/run", "execute",
-        "shell:rm",
-        # A different command with the same effect.
-        "shell:unlink",
-    ),
+_DB = {"tools": ["mcp://db/query"]}
+_SECRET = {"tools": ["mcp://vault/read"]}
+
+
+def test_reported_db_alias_case_is_rejected():
+    # Case A: db/salaries vs db/public.salaries.
+    with pytest.raises(PolicyValidationError) as info:
+        load_policy_text(_policy(
+            _rule("allow-crm", "allow", ["db:crm/**"], **_DB),
+            _rule("deny-salaries", "deny", ["db:crm/salaries"], **_DB),
+        ))
+    assert info.value.codes == (IssueCode.UNSAFE_PATH_CARVE_OUT,)
+    assert info.value.issues[0].path == "rules[1].resources"
+
+
+def test_reported_secret_alias_case_is_rejected():
+    # Case B: secret/app/key vs secret/data/app/key.
+    with pytest.raises(PolicyValidationError) as info:
+        load_policy_text(_policy(
+            _rule("allow-kv", "allow", ["secret:kv/**"], **_SECRET),
+            _rule("deny-key", "deny", ["secret:kv/app/key"], **_SECRET),
+        ))
+    assert info.value.codes == (IssueCode.UNSAFE_PATH_CARVE_OUT,)
+    assert info.value.issues[0].path == "rules[1].resources"
+
+
+DB_SECRET_REJECTED = {
+    # --- DENY inside broad ALLOW -------------------------------------------
+    "db deny table in database allow": (
+        (_rule("a", "allow", ["db:crm/**"], **_DB), _rule("d", "deny", ["db:crm/salaries"], **_DB)),
+        "", IssueCode.UNSAFE_PATH_CARVE_OUT),
+    "db deny table in wildcard allow": (
+        (_rule("a", "allow", ["*"], **_DB), _rule("d", "deny", ["db:crm/salaries"], **_DB)),
+        "", IssueCode.UNSAFE_PATH_CARVE_OUT),
+    "db deny whole database in wildcard allow (cross-database names)": (
+        (_rule("a", "allow", ["*"], **_DB), _rule("d", "deny", ["db:crm/**"], **_DB)),
+        "", IssueCode.UNSAFE_PATH_CARVE_OUT),
+    "secret deny key in prefix allow": (
+        (_rule("a", "allow", ["secret:kv/**"], **_SECRET),
+         _rule("d", "deny", ["secret:kv/app/key"], **_SECRET)),
+        "", IssueCode.UNSAFE_PATH_CARVE_OUT),
+    "secret deny subtree in deeper prefix allow": (
+        (_rule("a", "allow", ["secret:kv/app/**"], **_SECRET),
+         _rule("d", "deny", ["secret:kv/app/prod/**"], **_SECRET)),
+        "", IssueCode.UNSAFE_PATH_CARVE_OUT),
+    "secret deny in wildcard allow": (
+        (_rule("a", "allow", ["*"], **_SECRET), _rule("d", "deny", ["secret:kv/**"], **_SECRET)),
+        "", IssueCode.UNSAFE_PATH_CARVE_OUT),
+    # --- REQUIRE_APPROVAL inside broad ALLOW --------------------------------
+    "db approval table in database allow": (
+        (_rule("a", "allow", ["db:crm/**"], **_DB),
+         _rule("p", "require_approval", ["db:crm/salaries"], **_DB)),
+        "", IssueCode.UNSAFE_PATH_CARVE_OUT),
+    "secret approval key in prefix allow": (
+        (_rule("a", "allow", ["secret:kv/**"], **_SECRET),
+         _rule("p", "require_approval", ["secret:kv/app/key"], **_SECRET)),
+        "", IssueCode.UNSAFE_PATH_CARVE_OUT),
+    # --- DENY inside REQUIRE_APPROVAL ---------------------------------------
+    "db deny inside require_approval": (
+        (_rule("p", "require_approval", ["db:crm/**"], **_DB),
+         _rule("d", "deny", ["db:crm/salaries"], **_DB)),
+        "", IssueCode.ALIAS_DOWNGRADE_RISK),
+    "secret deny inside require_approval": (
+        (_rule("p", "require_approval", ["secret:kv/**"], **_SECRET),
+         _rule("d", "deny", ["secret:kv/app/key"], **_SECRET)),
+        "", IssueCode.ALIAS_DOWNGRADE_RISK),
+    "db deny under require_approval default": (
+        (_rule("d", "deny", ["db:crm/salaries"], **_DB),),
+        'decision = "require_approval"', IssueCode.ALIAS_DOWNGRADE_RISK),
+    "secret deny under require_approval default": (
+        (_rule("d", "deny", ["secret:kv/**"], **_SECRET),),
+        'decision = "require_approval"', IssueCode.ALIAS_DOWNGRADE_RISK),
 }
 
 
-@pytest.mark.parametrize("case", NOT_ALIAS_VERIFIED.values(), ids=NOT_ALIAS_VERIFIED.keys())
-def test_non_path_carve_outs_are_accepted_but_not_alias_safe(case):
+@pytest.mark.parametrize("case", DB_SECRET_REJECTED.values(), ids=DB_SECRET_REJECTED.keys())
+def test_db_and_secret_unsafe_shapes_are_rejected(case):
+    rules, defaults, code = case
+    assert _rejection_codes(_policy(*rules, defaults=defaults)) == {code}
+
+
+@pytest.mark.parametrize("case", DB_SECRET_REJECTED.values(), ids=DB_SECRET_REJECTED.keys())
+def test_db_and_secret_rejection_is_rule_order_independent(case):
+    rules, defaults, code = case
+    assert _rejection_codes(_policy(*reversed(rules), defaults=defaults)) == {code}
+
+
+DB_SECRET_ACCEPTED = {
+    "db explicit allowlist": (
+        _rule("a", "allow", ["db:crm/orders", "db:crm/customers"], **_DB),),
+    "db allowlist with sibling deny": (
+        _rule("a", "allow", ["db:crm/orders"], **_DB), _rule("d", "deny", ["db:crm/salaries"], **_DB)),
+    "db deny broader than allow": (
+        _rule("a", "allow", ["db:crm/orders"], **_DB), _rule("d", "deny", ["db:crm/**"], **_DB)),
+    "db deny identical to allow": (
+        _rule("a", "allow", ["db:crm/**"], **_DB), _rule("d", "deny", ["db:crm/**"], **_DB)),
+    "db deny for disjoint agents": (
+        _rule("a", "allow", ["db:crm/**"], agents=["reader"], **_DB),
+        _rule("d", "deny", ["db:crm/salaries"], agents=["other"], **_DB)),
+    "db root-wide deny on all resources": (
+        _rule("a", "allow", ["db:crm/**"], **_DB), _rule("d", "deny", ["*"], **_DB)),
+    "secret explicit allowlist": (
+        _rule("a", "allow", ["secret:kv/app/api", "secret:kv/app/db"], **_SECRET),),
+    "secret allowlist with sibling deny": (
+        _rule("a", "allow", ["secret:kv/app/api"], **_SECRET),
+        _rule("d", "deny", ["secret:kv/app/key"], **_SECRET)),
+    "secret deny broader than allow": (
+        _rule("a", "allow", ["secret:kv/app/api"], **_SECRET), _rule("d", "deny", ["secret:kv/**"], **_SECRET)),
+    "secret root-wide deny on all resources": (
+        _rule("a", "allow", ["secret:kv/**"], **_SECRET), _rule("d", "deny", ["*"], **_SECRET)),
+}
+
+
+@pytest.mark.parametrize("rules", DB_SECRET_ACCEPTED.values(), ids=DB_SECRET_ACCEPTED.keys())
+def test_db_and_secret_safe_shapes_are_accepted(rules):
+    first = load_policy_text(_policy(*rules))
+    assert load_policy_text(_policy(*reversed(rules))).sha256 == first.sha256
+
+
+@pytest.fixture(scope="module")
+def db_secret_allowlist_engine():
+    return PolicyEngine(
+        load_policy_text(_policy(
+            _rule("tables", "allow", ["db:crm/orders"], **_DB),
+            _rule("secrets", "allow", ["secret:kv/app/api"], **_SECRET),
+        )),
+        clock=fixed_clock,
+    )
+
+
+@pytest.mark.parametrize(
+    ("resource", "tool", "expected"),
+    [
+        ("db:crm/orders", "mcp://db/query", ReasonCode.RULE_ALLOW),
+        ("db:crm/public.orders", "mcp://db/query", ReasonCode.DEFAULT_DENY),  # alternate spelling
+        ("db:crm/salaries", "mcp://db/query", ReasonCode.DEFAULT_DENY),
+        ("db:crm/public.salaries", "mcp://db/query", ReasonCode.DEFAULT_DENY),
+        ("db:other/crm.dbo.salaries", "mcp://db/query", ReasonCode.DEFAULT_DENY),
+        ("secret:kv/app/api", "mcp://vault/read", ReasonCode.RULE_ALLOW),
+        ("secret:kv/data/app/api", "mcp://vault/read", ReasonCode.DEFAULT_DENY),  # alternate path
+        ("secret:kv/app/key", "mcp://vault/read", ReasonCode.DEFAULT_DENY),
+        ("secret:kv/data/app/key", "mcp://vault/read", ReasonCode.DEFAULT_DENY),
+    ],
+)
+def test_alternate_identifiers_fail_closed_under_db_secret_allowlists(
+    db_secret_allowlist_engine, resource, tool, expected
+):
+    record = _evaluate(db_secret_allowlist_engine, resource, tool=tool)
+    assert record.reason_code is expected
+
+
+# --- Known residual gaps (documented; NOT protected by static validation) ---
+#
+# The generic check only sees nesting within one kind and one authority. An
+# allow that is a *sibling* of a deny, or lies under a different database or
+# top-level secret name, can still name an alias of the denied resource.
+# Detecting that needs provider semantics, which the engine deliberately does
+# not encode. These tests pin the gap so it is never mistaken for a guarantee.
+
+KNOWN_ALIAS_GAPS = {
+    "secret sibling: data/ API prefix": (
+        (_rule("a", "allow", ["secret:kv/data/**"], **_SECRET),
+         _rule("d", "deny", ["secret:kv/app/key"], **_SECRET)),
+        "mcp://vault/read", "read", "secret:kv/app/key", "secret:kv/data/app/key"),
+    "db cross-database name": (
+        (_rule("a", "allow", ["db:other/**"], **_DB), _rule("d", "deny", ["db:crm/**"], **_DB)),
+        "mcp://db/query", "read", "db:crm/salaries", "db:other/crm.dbo.salaries"),
+    "shell different command": (
+        (_rule("a", "allow", ["*"], tools=["mcp://shell/run"], operations=["execute"]),
+         _rule("d", "deny", ["shell:rm"], tools=["mcp://shell/run"], operations=["execute"])),
+        "mcp://shell/run", "execute", "shell:rm", "shell:unlink"),
+    "email different domain": (
+        (_rule("a", "allow", ["*"], tools=["mcp://mail/send"], operations=["external_send"]),
+         _rule("d", "deny", ["email:rival.example.com"], tools=["mcp://mail/send"],
+               operations=["external_send"])),
+        "mcp://mail/send", "external_send", "email:rival.example.com", "email:mail.rival.example.com"),
+}
+
+
+@pytest.mark.parametrize("case", KNOWN_ALIAS_GAPS.values(), ids=KNOWN_ALIAS_GAPS.keys())
+def test_known_alias_gaps_are_accepted_and_bypassable(case):
     rules, tool, operation, denied, alias = case
     engine = PolicyEngine(load_policy_text(_policy(*rules)), clock=fixed_clock)
     assert _evaluate(engine, denied, tool=tool, operation=operation).decision is Decision.DENY
-    # Known, documented gap: the alias is ALLOWED. Do not rely on db:/secret:/
-    # shell: deny carve-outs; use allowlists.
+    # Documented gap: the alias is ALLOWED. Use allowlists; a trusted adapter
+    # must resolve provider identities (Genesis D).
     assert _evaluate(engine, alias, tool=tool, operation=operation).decision is Decision.ALLOW
 
 

@@ -553,42 +553,53 @@ def _approvers(
 
 
 # ---------------------------------------------------------------------------
-# fs:/url: path structure (alias safety)
+# Hierarchical resource structure (alias safety): fs:, url:, db:, secret:
 # ---------------------------------------------------------------------------
 #
-# The engine matches path identifiers byte-for-byte and cannot know whether
-# two spellings name the same object (case-insensitive lookup, 8.3 short
-# names, symbolic links, junctions, hard links, mounts). That is harmless for
-# *allow* rules: an unrecognized spelling matches no allow and falls to the
-# default deny. It is unsafe when a more restrictive rule is carved out of a
-# broader allow: an alias of the protected path is still inside the allow but
-# no longer inside the deny, so it is ALLOWED.
+# The engine matches resource identifiers byte-for-byte and cannot know
+# whether two identifiers name the same object. Examples (provider- and
+# platform-specific; the engine encodes none of them):
+#   fs:     case-insensitive lookup, 8.3 short names, links, mounts
+#   url:    case-insensitive servers, host-name aliases (IPs, CNAMEs)
+#   db:     schema-qualified names ("public.salaries" vs "salaries"),
+#           cross-database names, views, synonyms, identifier case-folding
+#   secret: alternate API paths for one secret (for example a key-value
+#           engine's "data/" or "metadata/" prefixes), mounts, case-folding
 #
-# Three fail-closed constraints therefore apply to fs: and url: patterns
+# That is harmless for *allow* rules: an unrecognized identifier matches no
+# allow and falls to the default deny. It is unsafe when a more restrictive
+# rule is carved out of a broader allow: an alias of the protected resource
+# is still inside the allow but no longer inside the deny, so it is ALLOWED.
+#
+# Three fail-closed constraints therefore apply to these kinds
 # (effect strength: deny > require_approval > allow):
 #
-# * PATH_CASE_CONFLICT - the policy may not spell the same path prefix with
+# * PATH_CASE_CONFLICT - the policy may not spell the same prefix with
 #   different letter case in different places (for example "/srv/Data" and
-#   "/srv/data"). Such a policy is ambiguous across platforms.
+#   "/srv/data"). db: and secret: identifiers are lowercase-only, so this can
+#   only trigger for fs: and url:.
 # * UNSAFE_PATH_CARVE_OUT - a deny or require_approval rule may not cover a
-#   path that lies strictly inside the resource pattern of an allow rule whose
-#   agents, tools and operations overlap with it (alias -> ALLOW).
-# * ALIAS_DOWNGRADE_RISK - a deny rule may not cover a path that lies strictly
-#   inside an overlapping require_approval rule, nor sit under a
+#   resource that lies strictly inside the resource pattern of an allow rule
+#   whose agents, tools and operations overlap with it (alias -> ALLOW).
+# * ALIAS_DOWNGRADE_RISK - a deny rule may not cover a resource that lies
+#   strictly inside an overlapping require_approval rule, nor sit under a
 #   require_approval *default* (alias -> REQUIRE_APPROVAL instead of DENY).
 #
 # Rule conditions are ignored (the checks assume they can hold at the same
 # time). A restrictive pattern covering the whole fs: namespace ("fs:/**")
-# cannot be side-stepped by any fs: alias and is exempt; url: patterns are
-# always host-specific and never exempt (host names have aliases too).
+# cannot be side-stepped by any fs: alias and is exempt. No other pattern is
+# exempt: url:, db: and secret: patterns are always scoped to one host,
+# database or top-level secret name, and those names have aliases too. A
+# deny with resources = ["*"] is never a carve-out (it covers every kind).
 #
-# db: and secret: identifiers are NOT covered: their grammar admits aliases
-# (for example "db:crm/public.salaries" vs "db:crm/salaries", or a secret
-# store's alternate API path), but restricting them is a pending decision.
+# shell: and email: are not covered: their aliases are semantic (a different
+# command or domain with the same effect), not structural.
 #
 # Matching itself is unchanged: these checks only reject policies.
 
-_ALIAS_SENSITIVE_KINDS = frozenset({ResourceKind.FS, ResourceKind.URL})
+_ALIAS_SENSITIVE_KINDS = frozenset(
+    {ResourceKind.FS, ResourceKind.URL, ResourceKind.DB, ResourceKind.SECRET}
+)
 
 
 class _PathNode:
@@ -666,7 +677,7 @@ def _covers_whole_kind(pattern: ResourcePattern) -> bool:
 
 
 def _restrictive_patterns(rule: Rule) -> list[ResourcePattern]:
-    """fs:/url: patterns of a restrictive rule that an alias could escape."""
+    """fs:/url:/db:/secret: patterns of a restrictive rule that an alias could escape."""
     return [
         pattern for pattern in _sensitive_patterns(rule) if not _covers_whole_kind(pattern)
     ]
@@ -681,8 +692,10 @@ def find_path_carve_outs(
     """Return ``(restrictive_index, permissive_index)`` pairs.
 
     A pair means: rule ``restrictive_index`` (with an effect in
-    ``restrictive``) protects an fs:/url: path that lies strictly inside a
-    resource pattern of rule ``permissive_index`` (effect ``permissive``),
+    ``restrictive``) protects an fs:/url:/db:/secret: resource that lies
+    strictly inside a resource pattern of rule ``permissive_index`` (effect
+    ``permissive``, including ``resources = ["*"]``) within the same kind and
+    authority (host, database),
     and the two rules can apply to the same agent, tool and operation. At
     most one pair is reported per restrictive rule.
 
@@ -739,7 +752,8 @@ def find_path_carve_outs(
 
 
 def _path_issues(rules: list[Rule], default_decision: Effect, issues: _Issues) -> None:
-    # 1. Consistent spelling of every fs:/url: path prefix in the policy.
+    # 1. Consistent spelling of every prefix in the policy (only fs:/url: can
+    #    differ in case; db:/secret: identifiers are lowercase-only).
     roots: dict[tuple[ResourceKind, str], _PathNode] = {}
     for index, rule in enumerate(rules):
         for pattern in _sensitive_patterns(rule):
@@ -770,9 +784,10 @@ def _path_issues(rules: list[Rule], default_decision: Effect, issues: _Issues) -
         issues.add(
             IssueCode.UNSAFE_PATH_CARVE_OUT,
             f"rules[{restrictive_index}].resources",
-            f"protects a path inside the broader allow of rules[{permissive_index}]; "
-            "an alternate spelling of the protected path (letter case, short name, "
-            "link) would match the allow but not this rule. List the allowed paths "
+            f"protects a resource inside the broader allow of rules[{permissive_index}]; "
+            "an alternate identifier of the protected resource (letter case, short "
+            "name, link, schema-qualified table name, alternate secret path) would "
+            "match the allow but not this rule. List the allowed resources "
             "explicitly instead of carving exceptions out of a broader allow",
         )
 
@@ -785,9 +800,9 @@ def _path_issues(rules: list[Rule], default_decision: Effect, issues: _Issues) -
         issues.add(
             IssueCode.ALIAS_DOWNGRADE_RISK,
             f"rules[{restrictive_index}].resources",
-            f"denies a path inside the broader require_approval of "
-            f"rules[{permissive_index}]; an alternate spelling of the denied path "
-            "would get REQUIRE_APPROVAL instead of DENY",
+            f"denies a resource inside the broader require_approval of "
+            f"rules[{permissive_index}]; an alternate identifier of the denied "
+            "resource would get REQUIRE_APPROVAL instead of DENY",
         )
     if default_decision is Effect.REQUIRE_APPROVAL:
         for index, rule in enumerate(rules):
@@ -795,9 +810,9 @@ def _path_issues(rules: list[Rule], default_decision: Effect, issues: _Issues) -
                 issues.add(
                     IssueCode.ALIAS_DOWNGRADE_RISK,
                     f"rules[{index}].resources",
-                    "denies an fs:/url: path while the default decision is "
-                    "require_approval; an alternate spelling of the denied path would "
-                    "get REQUIRE_APPROVAL instead of DENY",
+                    "denies an fs:/url:/db:/secret: resource while the default "
+                    "decision is require_approval; an alternate identifier of the "
+                    "denied resource would get REQUIRE_APPROVAL instead of DENY",
                 )
 
 
