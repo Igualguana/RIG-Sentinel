@@ -1,7 +1,9 @@
-# Audit Foundation (Genesis B2-M2-B)
+# Audit Foundation (Genesis B2-M2-B, B2-P1 privacy hardening)
 
 > **Status: development, unreleased.** M2-B is the pure, in-memory foundation of the audit
-> subsystem. It is **not** a complete or production audit log:
+> subsystem; B2-P1 adds an opt-in privacy-hardened event schema (`rig.audit-event/v3`) and
+> a persistence privacy gate (see [Schema v3](#schema-v3-b2-p1-privacy-hardening)). It is
+> **not** a complete or production audit log:
 > - there is no persistence, cross-event ordering chain, checkpointing, key storage or rotation (M2-C);
 > - nothing yet evaluates and audits in one step, and there are no failure modes (M2-D).
 >
@@ -29,10 +31,10 @@ caller ──▶ PolicyEngine.evaluate(request) ──▶ DecisionRecord        
 
 | Module | Responsibility |
 |---|---|
-| `events.py` | Frozen models, the `rig.audit-event/v2` event, the `rig.audit-envelope/v1` envelope, and envelope sealing and verification |
-| `builder.py` | `AuditEventBuilder`: `DecisionRecord` + original request → event or envelope |
-| `redaction.py` | Resource minimization, keyed references, credential-like identifier filter, `error_type` mapping |
-| `validation.py` | Field checks and closed-schema parsers for untrusted dictionaries |
+| `events.py` | Frozen models, the `rig.audit-event/v2` and `rig.audit-event/v3` events, the `rig.audit-envelope/v1` envelope, and envelope sealing and verification |
+| `builder.py` | `AuditEventBuilder`: `DecisionRecord` + original request → event or envelope (v2 by default, v3 when selected) |
+| `redaction.py` | Resource minimization, keyed references, credential-like identifier filter, `error_type` mapping, and the persistence privacy gate `check_persistable` |
+| `validation.py` | Field checks and closed-schema parsers for untrusted dictionaries (`event_from_dict` for v2, `event_v3_from_dict` for v3) |
 | `chain.py` | Canonical digests, HMAC-SHA-256, pseudonyms, constant-time comparison, `AuthStatus` |
 | `keys.py` | `AuditKey` and `AuditKeys`: in-memory keys with purpose binding |
 | `sinks.py` | `AuditSink` protocol, `MemorySink`, `AuditReceipt` |
@@ -93,6 +95,136 @@ In every state except `consistent`, all caller fields are `null`.
 - **Credential-like identifiers** (known prefixes such as `sk-`, `xoxb-`, `glpat-`, or long mixed letter-digit runs) are dropped and counted in `redacted_fields`. This is a heuristic and only a second line of defense.
 - **`redacted_fields` is an exact count**, never saturated. At most 1 (`agent_id`) + 1 (`tool_id`) + 32 unique labels (M1's `MAX_REQUEST_LABELS`; `parse_request` rejects more) = 34 redactions are reachable, below the schema bound of 64. A test fails if M1's label limit ever grows past that bound.
 - **`error_class`** is a built-in exception name, `UnlistedError` or `InternalError`. Anything else maps to `UnlistedError`.
+
+## Schema v3 (B2-P1 privacy hardening)
+
+`rig.audit-event/v2` stays the **default** and is unchanged. Version 3 is used only when it is
+selected explicitly:
+
+```python
+builder = AuditEventBuilder(keys, event_schema=AUDIT_EVENT_SCHEMA_V3)
+```
+
+Any other value of `event_schema` (including a `str` subclass, a different case or extra
+whitespace) is rejected with `UNSUPPORTED_SCHEMA`. A v2 event is never reinterpreted as v3:
+`event_from_dict` accepts only v2, `event_v3_from_dict` accepts only v3, and
+`envelope_from_dict` chooses the parser from the exact `schema_version` string. A v2 event
+relabelled as v3, or a v3 event relabelled as v2, fails closed-schema validation, and in an
+envelope it also breaks the digest and MAC, because `schema_version` is part of the
+authenticated content.
+
+### v3 caller section
+
+The `audit` and `engine` sections are the same as in v2. The `caller` section is replaced by a
+closed set of fields in which **actor and tool identities are never stored in plain text**:
+
+| Field | `pseudonymized` (K_ref present) | `omitted` (no K_ref) |
+|---|---|---|
+| `identity_mode` | `pseudonymized` | `omitted` |
+| `agent_ref` | HMAC(K_ref, `rig.audit-ref/v1/agent` NUL agent_id)[:128 bits] | `null` |
+| `tool_ref` | HMAC(K_ref, `rig.audit-ref/v1/tool` NUL tool_id)[:128 bits] | `null` |
+| `readable_labels` | Labels from the approved allowlist, sorted | Same |
+| `label_refs` | Sorted, unique HMAC(K_ref, `rig.audit-ref/v1/label` NUL label) of every **other** label | `null` (other labels are dropped and counted) |
+| `omitted_labels_count` | `null` (nothing is omitted: other labels become `label_refs`) | Exact number of labels dropped because no K_ref was available; `0`, never absent, when none were |
+| `manifest_ref` | HMAC(K_ref, `rig.audit-ref/v1/manifest` NUL manifest_sha256)[:128 bits], or `null` if the request has no manifest digest | `null` |
+| `resource` | `kind`, `depth`, keyed `authority_ref` and `resource_ref` (as in v2) | `kind` and `depth` only |
+| `session_ref`, `request_ref` | Keyed references (as in v2) | `null` |
+| `assurance_claim`, `operation`, `environment` | Closed enumerations, readable | Same |
+| `consistency` | As in v2 | As in v2 |
+
+There is no `agent_id`, `tool_id`, `manifest_sha256`, `labels` or `redacted_fields` field in
+v3, and no plain-text fallback: when K_ref is missing, identities are omitted, not written in
+clear.
+
+**Tool manifest digest (security review finding H-1).** The caller-supplied `manifest_sha256`
+identifies the tool to anyone who knows its manifest, which would undo `tool_ref`. v3 therefore
+never copies it into an event: with K_ref it becomes `manifest_ref` in its own namespace
+(`manifest`, separate from `tool`); without K_ref it is dropped. The raw digest is not used as
+a pseudonym, and no unkeyed hash of it is recorded in the caller section. v2 still records
+`manifest_sha256` unchanged, and M1 still uses it for decisions and in `request_digest`.
+
+**Omitted-label accounting (security review finding M-1).** In `omitted` mode,
+`omitted_labels_count` is the number of the request's labels that were not readable (outside
+the approved allowlist, or outside a narrower operator allowlist) and could not be referenced
+because K_ref is absent. Labels are counted once each (M1 de-duplicates them). The count:
+- is an exact `int` (booleans, `int` subclasses, floats and strings are rejected), from 0 up to `MAX_REQUEST_LABELS` (32) minus the number of readable labels;
+- is `0` when nothing was omitted, and is never absent in `omitted` mode;
+- is `null` in `pseudonymized` mode, and whenever the request is not `consistent`.
+
+Labels rejected by request validation are a different case: a request with more than 32 labels
+fails M1's parser, so the event has `consistency = "invalid_request"`, every caller claim is
+`null`, and nothing is counted. The counter is separate from v2's `redacted_fields`; there is no
+invariant connecting them.
+
+**Validation rules** (enforced on construction and when parsing):
+- `identity_mode` is `pseudonymized` exactly when `audit.redaction_mode` is `scoped` (K_ref present, `ref_key_id` set), and `omitted` exactly when it is `no-ref-key`.
+- In `pseudonymized` mode, `agent_ref`, `tool_ref` and `label_refs` are required, `manifest_ref` is optional, and `omitted_labels_count` must be `null`. In `omitted` mode, `agent_ref`, `tool_ref`, `label_refs`, `manifest_ref`, `session_ref` and `request_ref` must be `null`, and `omitted_labels_count` is required. A `no-ref-key` event may contain no keyed reference at all.
+- References are exactly 32 lowercase hexadecimal characters; `label_refs` is sorted, unique and holds at most 32 entries.
+- Readable labels plus `label_refs` (pseudonymized), or readable labels plus `omitted_labels_count` (omitted), may not exceed `MAX_REQUEST_LABELS` (`LIMIT_EXCEEDED`).
+- When `consistency` is not `consistent`, every caller claim, including `manifest_ref` and `omitted_labels_count`, is `null`, as in v2.
+- `readable_labels` must be a subset of the approved allowlist.
+
+**Domain separation:** agent, tool, manifest and label references use separate namespaces under
+the existing `rig.audit-ref/v1/<kind>` construction, so the same string used as an agent, a
+tool, a manifest digest and a label produces four unrelated references. **No unkeyed hash is
+ever used as a caller identifier**, and K_ref is never written into an event, error or `repr()`.
+
+### Readable label allowlist
+
+`APPROVED_READABLE_LABELS = {"reviewed", "untrusted_content_present"}`, taken from the labels
+the M1 documentation and fixtures already use. Labels are compared as exact ASCII strings:
+look-alike Unicode, zero-width characters, percent-encoding, Base64 and different case never
+match. There is **no free-text exception**.
+
+A deployment can narrow the set (`readable_labels=frozenset({"reviewed"})`, or `frozenset()`
+for none) but never extend it: any label outside the approved set, a `str` subclass, or a
+container that is not a `set` or `frozenset` is rejected with `INVALID_FIELD`, without echoing
+the value. `readable_labels=None` means the full approved set. Labels that are not readable
+become `label_refs` in `pseudonymized` mode and are dropped and counted in
+`omitted_labels_count` in `omitted` mode.
+
+### Persistence privacy gate
+
+`check_persistable(envelope, keys, *, readable_labels=None) -> PersistenceVerdict` is the check
+a future persistent sink must pass before storing an envelope. It is **not** a sink and stores
+nothing. It accepts an envelope only if all of the following hold:
+
+1. it is an `AuditEnvelope` (exact type) whose event is v3. v2 events are refused with `v2_event_not_persistable`;
+2. its digest and MAC verify under `keys`. There is no unauthenticated mode and no option to skip or downgrade verification: unsealed envelopes, unknown keys, bad MACs and bad digests are refused with their own codes;
+3. its canonical bytes re-parse under the closed v3 schema to identical bytes. This refuses events altered in memory behind the model's back, even when a holder of K_auth sealed them afterwards (`schema_invalid`);
+4. every readable label is within `readable_labels` (default and maximum: the approved set). Otherwise the result is `label_not_allowed`.
+
+The gate is pure: it never modifies, repairs or re-seals the envelope, performs no I/O, and
+returns a verdict instead of raising for invalid content. The verdict carries a closed
+`PersistenceCode` only, never event content. Passing it proves that the event follows the v3
+privacy rules and was sealed by a holder of K_auth. It does **not** prove that `PolicyEngine`
+made the decision, that anything was stored, or that a tool ran.
+
+`MemorySink` accepts both v2 and v3 envelopes, unchanged; it is in-memory only and does not
+call the gate.
+
+### Digest and MAC domain for v3 (compatibility note)
+
+v3 envelopes reuse the M2-B envelope contract unchanged: the event digest is
+SHA-256(`rig.audit-event/v2` NUL canonical(event)) and the MAC is
+HMAC-SHA-256(K_auth, `rig.audit-mac/v1` NUL key_id NUL canonical(event)), for both event
+versions. The digest domain string therefore still says `v2` for v3 events. This is a
+**temporary compatibility decision for P1**, accepted by the independent security review: the
+event's own `schema_version` is inside the digested and authenticated bytes, so a v2 and a v3
+event can never share a digest or MAC, and relabelling a sealed event as the other version
+fails verification and parsing (tests in `tests/test_audit_p1_remediation.py`). P1 introduces
+no new envelope schema. Version-specific envelope domains are **future M2-C design work** and
+need their own review.
+
+### What v3 does not provide
+
+- **Pseudonymization is not anonymity.** References are stable for a given K_ref, so all events of one agent, tool, manifest, label, session or resource can be linked to each other. Anyone who holds K_ref can confirm a guessed identifier by recomputing its reference, and so can test a list of candidate names.
+- **Readable fields still carry information.** Assurance, operation, environment, resource kind and depth, timestamps, policy and rule ids, the approved labels and `omitted_labels_count` stay readable; together they can make events correlatable or identifiable.
+- **The engine section keeps M1's unkeyed digests.** `engine.request_digest` (and `decision_ref`, which covers it) are unkeyed SHA-256 digests of the full canonical request, including agent id, tool id, manifest digest, labels, resource and any session or request id. Someone who can guess *every* field of a request can confirm the guess against them. Random session or request ids make this impractical, but requests without them may have a small guessing space. These digests are kept unchanged because M1's decision and request-digest semantics must not change in P1; keying or removing them from persistent events is an open design question.
+- **Forged but well-formed content.** The schema can't tell a genuine reference from any other 32-hex string, or a genuine count from any other in-range count. Only the MAC protects these, so any holder of K_auth can seal well-formed but false values.
+- **K_ref epochs.** A new K_ref produces unrelated references, so events from different keys can't be correlated by reference. There is no rotation or epoch management yet (M2-C).
+- **Omitted mode loses information.** Without K_ref, identities, the manifest digest, non-approved labels (only their number is kept) and session and request ids are not recorded.
+- **No storage and no enforcement.** P1 adds no persistence (JSONL is M2-C), and events still record decisions only; nothing blocks a tool call at runtime.
 
 ## HMAC design and limitations
 
@@ -186,11 +318,11 @@ The M1 API is unchanged in M2-B.
 
 ## Known limitations
 
-- **Readable identifiers can be sensitive.**
-  - `agent_id`, `tool_id` and `labels` are stored as is.
+- **Readable identifiers can be sensitive (v2).**
+  - In v2 events (the default), `agent_id`, `tool_id` and `labels` are stored as is. v3 events replace them with keyed references or omit them (see [Schema v3](#schema-v3-b2-p1-privacy-hardening)), and `check_persistable` refuses v2 events.
   - They pass M1's identifier grammar (lowercase ASCII, ≤ 128 characters), which limits their form but not their meaning. Values such as `john.smith-laptop`, `patient-12345` or `mcp://acme-payroll/get-salary` are recorded unchanged.
   - The credential filter is a heuristic and misses short secrets (for example `pw-hunter2`) and token runs shorter than 24 characters.
-  - Treat audit events as sensitive data. Pseudonymizing these fields is an open design decision.
+  - Treat audit events as sensitive data, in v2 and v3 alike.
 - **In-process memory exhaustion.**
   - Code running in the same process can make the builder do unbounded work, for example a hostile `to_dict()` that returns very large structures, since no size cap is applied before serialization.
   - `MemorySink` is bounded (by default 10,000 events and 32 MiB), but its contents live in process memory.
@@ -212,7 +344,7 @@ The M1 API is unchanged in M2-B.
 ## Remaining work
 
 **M2-C:**
-- JSONL persistence;
+- JSONL persistence, which must apply `check_persistable` before writing;
 - the ordering chain (`seq`, `prev_event_digest`, segment headers);
 - external checkpoints;
 - an on-disk verifier;
