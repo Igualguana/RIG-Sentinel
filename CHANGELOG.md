@@ -52,6 +52,29 @@ its API and schema may change before a release.
     receipts are never stored inside events.
   - **Scope:** no persistence, ordering chain, key storage or enforcement yet. The policy
     package does not depend on it. See `docs/AUDIT.md`.
+- **Audit privacy hardening (Genesis B2-P1, in-memory only):**
+  - **Event schema `rig.audit-event/v3`**, selected explicitly with
+    `AuditEventBuilder(..., event_schema=AUDIT_EVENT_SCHEMA_V3)`. `rig.audit-event/v2` remains
+    the default and is unchanged. Separate parsers (`event_from_dict` for v2,
+    `event_v3_from_dict` for v3) never reinterpret one version as the other.
+  - **No plain-text actor or tool identities in v3:** `identity_mode` is `pseudonymized`
+    (`agent_ref`, `tool_ref`, `manifest_ref` and `label_refs` are HMAC references under K_ref,
+    with separate namespaces) or `omitted` (no K_ref: identities are left out, never written in
+    clear). The tool manifest digest, which identifies the tool, is never copied into a v3
+    event; v2 still records `manifest_sha256` unchanged.
+  - **Omitted-label accounting:** in `omitted` mode, `omitted_labels_count` records exactly how
+    many non-readable labels were dropped (0 when none; at most 32 minus the readable labels).
+    It is `null` in `pseudonymized` mode and for requests that are not `consistent`.
+  - **Readable label allowlist:** only `reviewed` and `untrusted_content_present` may appear
+    as readable labels; deployments can narrow but not extend the set.
+  - **Persistence privacy gate** `check_persistable`: a pure check, for a future persistent
+    sink, that accepts only authenticated v3 envelopes whose canonical bytes re-parse
+    identically and whose readable labels are allowed. It stores nothing.
+  - v3 envelopes keep the M2-B digest and MAC construction unchanged (a temporary
+    compatibility decision; per-version envelope domains are M2-C design work).
+    Pseudonymized events remain linkable and are not anonymous, and the engine section keeps
+    M1's unkeyed request digest. No persistent storage or runtime enforcement. See
+    `docs/AUDIT.md`.
 
 ### Security
 

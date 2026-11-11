@@ -43,12 +43,18 @@ from typing import Any
 from rig_sentinel.audit import redaction
 from rig_sentinel.audit.errors import AuditError, AuditErrorCode
 from rig_sentinel.audit.events import (
+    APPROVED_READABLE_LABELS,
+    AUDIT_EVENT_SCHEMA,
+    AUDIT_EVENT_SCHEMA_V3,
     ApprovalSection,
     AuditEnvelope,
     AuditEvent,
+    AuditEventV3,
     AuditSection,
     CallerSection,
+    CallerSectionV3,
     EngineSection,
+    IdentityMode,
     RedactionMode,
     RequestConsistency,
 )
@@ -93,6 +99,21 @@ def _utc_now() -> datetime:
 
 def _new_id() -> str:
     return secrets.token_hex(16)
+
+
+def _approved_subset(value: object) -> frozenset[str]:
+    """Validate an operator allowlist: an exact set/frozenset of exact str, within the
+    approved vocabulary. Nothing on a hostile container is called (no iteration of
+    unknown types)."""
+    if value is None:
+        return APPROVED_READABLE_LABELS
+    if type(value) is not frozenset and type(value) is not set:
+        raise AuditError(AuditErrorCode.INVALID_FIELD, "readable_labels")
+    items = tuple(value)  # exact set/frozenset: iteration runs no caller code
+    for item in items:
+        if type(item) is not str or item not in APPROVED_READABLE_LABELS:
+            raise AuditError(AuditErrorCode.INVALID_FIELD, "readable_labels")
+    return frozenset(items)
 
 
 def _invalid_record(path: str = "record") -> AuditError:
@@ -211,18 +232,35 @@ class AuditEventBuilder:
         *,
         clock: Clock | None = None,
         id_factory: IdFactory | None = None,
+        event_schema: str = AUDIT_EVENT_SCHEMA,
+        readable_labels: frozenset[str] | set[str] | None = None,
     ) -> None:
+        """``event_schema`` selects v2 (default, unchanged) or v3 (B2-P1, privacy-hardened).
+
+        ``readable_labels`` applies to v3 only: the labels that may stay readable. It can
+        only narrow :data:`APPROVED_READABLE_LABELS` (the default), never extend it.
+        """
         if keys is None:
             keys = AuditKeys()
         if type(keys) is not AuditKeys:
             raise AuditError(AuditErrorCode.KEY_INVALID, "keys")
+        if type(event_schema) is not str or (
+            event_schema != AUDIT_EVENT_SCHEMA and event_schema != AUDIT_EVENT_SCHEMA_V3
+        ):
+            raise AuditError(AuditErrorCode.UNSUPPORTED_SCHEMA, "event_schema")
         self._keys = keys
         self._clock: Clock = clock if clock is not None else _utc_now
         self._new_id: IdFactory = id_factory if id_factory is not None else _new_id
+        self._v3 = event_schema == AUDIT_EVENT_SCHEMA_V3
+        self._readable_labels = _approved_subset(readable_labels)
 
     def __repr__(self) -> str:
         mode = RedactionMode.SCOPED if self._keys.ref is not None else RedactionMode.NO_REF_KEY
-        return f"AuditEventBuilder(redaction_mode={mode.value!r}, authenticated={self._keys.auth is not None})"
+        schema = AUDIT_EVENT_SCHEMA_V3 if self._v3 else AUDIT_EVENT_SCHEMA
+        return (
+            f"AuditEventBuilder(event_schema={schema!r}, redaction_mode={mode.value!r}, "
+            f"authenticated={self._keys.auth is not None})"
+        )
 
     # -- public API -----------------------------------------------------------------
 
@@ -232,7 +270,7 @@ class AuditEventBuilder:
         request: object,
         *,
         correlation_id: str | None = None,
-    ) -> AuditEvent:
+    ) -> AuditEvent | AuditEventV3:
         failed = False
         try:
             return self._build(record, request, correlation_id)
@@ -266,10 +304,16 @@ class AuditEventBuilder:
 
     # -- internals ------------------------------------------------------------------
 
-    def _build(self, record: object, request: object, correlation_id: str | None) -> AuditEvent:
+    def _build(
+        self, record: object, request: object, correlation_id: str | None
+    ) -> AuditEvent | AuditEventV3:
         data = _record_snapshot(record)
         engine = _checked_engine_section(data)
-        caller = self._caller_section(data["request_digest"], request)
+        caller: CallerSection | CallerSectionV3
+        if self._v3:
+            caller = self._caller_section_v3(data["request_digest"], request)
+        else:
+            caller = self._caller_section(data["request_digest"], request)
         ref_key = self._keys.ref
         event_id = self._fresh_id("audit.event_id")  # generated first, as before the fix
         if correlation_id is None:
@@ -283,7 +327,9 @@ class AuditEventBuilder:
             redaction_mode=RedactionMode.SCOPED if ref_key is not None else RedactionMode.NO_REF_KEY,
             ref_key_id=None if ref_key is None else ref_key.key_id,
         )
-        return AuditEvent(audit=audit, engine=engine, caller=caller)
+        if self._v3:
+            return AuditEventV3(audit=audit, engine=engine, caller=caller)  # type: ignore[arg-type]
+        return AuditEvent(audit=audit, engine=engine, caller=caller)  # type: ignore[arg-type]
 
     def _fresh_id(self, path: str) -> str:
         value: object = None
@@ -369,6 +415,67 @@ class AuditEventBuilder:
             session_ref=redaction.reference(ref_key, "session", parsed.context.session_id),
             request_ref=redaction.reference(ref_key, "request", parsed.context.request_id),
             redacted_fields=redacted,
+        )
+
+    def _caller_section_v3(self, request_digest: str | None, request: object) -> CallerSectionV3:
+        """v3 caller claims: identities become K_ref references, or are omitted without K_ref.
+
+        No plaintext agent id, tool id or non-allowlisted label is ever placed in the event,
+        and there is no fallback to plaintext.
+        """
+        ref_key = self._keys.ref
+        mode = IdentityMode.PSEUDONYMIZED if ref_key is not None else IdentityMode.OMITTED
+        consistency, parsed = self._consistency(request_digest, request)
+        if consistency is not RequestConsistency.CONSISTENT or parsed is None:
+            return CallerSectionV3(
+                consistency=consistency,
+                identity_mode=mode,
+                agent_ref=None,
+                assurance_claim=None,
+                tool_ref=None,
+                manifest_ref=None,
+                operation=None,
+                environment=None,
+                readable_labels=None,
+                label_refs=None,
+                omitted_labels_count=None,
+                resource=None,
+                session_ref=None,
+                request_ref=None,
+            )
+
+        labels = parsed.context.labels  # M1-validated identifiers, sorted and unique
+        readable = tuple(sorted(label for label in labels if label in self._readable_labels))
+        others = [label for label in labels if label not in self._readable_labels]
+        agent = parsed.agent
+        agent_ref = tool_ref = manifest_ref = None
+        label_refs: tuple[str, ...] | None = None
+        omitted_labels_count: int | None = None
+        if ref_key is not None:
+            agent_ref = redaction.reference(ref_key, "agent", None if agent is None else agent.agent_id)
+            tool_ref = redaction.reference(ref_key, "tool", parsed.tool.tool_id)
+            # The manifest digest identifies the tool: keyed, in its own namespace, never in clear.
+            manifest_ref = redaction.reference(ref_key, "manifest", parsed.tool.manifest_sha256)
+            label_refs = tuple(sorted({redaction.reference(ref_key, "label", label) for label in others}))
+        else:
+            # Without K_ref these labels cannot be referenced; record only how many were left out.
+            omitted_labels_count = len(others)
+
+        return CallerSectionV3(
+            consistency=consistency,
+            identity_mode=mode,
+            agent_ref=agent_ref,
+            assurance_claim=None if agent is None else agent.assurance,
+            tool_ref=tool_ref,
+            manifest_ref=manifest_ref,
+            operation=parsed.operation,
+            environment=parsed.context.environment,
+            readable_labels=readable,
+            label_refs=label_refs,
+            omitted_labels_count=omitted_labels_count,
+            resource=redaction.minimize_resource(parsed.resource, ref_key),
+            session_ref=redaction.reference(ref_key, "session", parsed.context.session_id),
+            request_ref=redaction.reference(ref_key, "request", parsed.context.request_id),
         )
 
     @staticmethod

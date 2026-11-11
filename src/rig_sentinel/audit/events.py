@@ -36,17 +36,31 @@ from rig_sentinel.audit.chain import (
 from rig_sentinel.audit.errors import AuditError, AuditErrorCode
 from rig_sentinel.audit.keys import AuditKey, KeyPurpose
 from rig_sentinel.policy.canonical import canonical_json
-from rig_sentinel.policy.model import Assurance, Decision, Environment, OperationClass
+from rig_sentinel.policy.model import MAX_REQUEST_LABELS, Assurance, Decision, Environment, OperationClass
 from rig_sentinel.policy.reasons import ReasonCode
 from rig_sentinel.policy.resources import ResourceKind
 
 AUDIT_EVENT_SCHEMA = "rig.audit-event/v2"
+AUDIT_EVENT_SCHEMA_V3 = "rig.audit-event/v3"
+SUPPORTED_EVENT_SCHEMAS = (AUDIT_EVENT_SCHEMA, AUDIT_EVENT_SCHEMA_V3)
 AUDIT_ENVELOPE_SCHEMA = "rig.audit-envelope/v1"
+
+# Readable-label vocabulary for v3 (B2-P1): exactly the policy labels documented in
+# docs/POLICY_ENGINE.md. Every other label is pseudonymized or omitted. Extending this set
+# is a schema and privacy decision that needs review; there is no free-text exception.
+APPROVED_READABLE_LABELS = frozenset({"reviewed", "untrusted_content_present"})
 
 
 class RedactionMode(StrEnum):
     SCOPED = "scoped"  # keyed pseudonyms (K_ref present)
     NO_REF_KEY = "no-ref-key"  # no K_ref: no pseudonyms, no authority, no digests
+
+
+class IdentityMode(StrEnum):
+    """How v3 events represent caller identities (agent, tool, labels)."""
+
+    PSEUDONYMIZED = "pseudonymized"  # keyed HMAC references under K_ref
+    OMITTED = "omitted"  # no K_ref: no identity material at all
 
 
 class RequestConsistency(StrEnum):
@@ -73,6 +87,13 @@ CALLER_FIELDS = frozenset(
     {
         "consistency", "agent_id", "assurance_claim", "tool_id", "manifest_sha256", "operation",
         "environment", "labels", "resource", "session_ref", "request_ref", "redacted_fields",
+    }
+)
+CALLER_V3_FIELDS = frozenset(
+    {
+        "consistency", "identity_mode", "agent_ref", "assurance_claim", "tool_ref",
+        "manifest_ref", "operation", "environment", "readable_labels", "label_refs",
+        "omitted_labels_count", "resource", "session_ref", "request_ref",
     }
 )
 RESOURCE_FIELDS = frozenset({"kind", "depth", "authority_ref", "resource_ref"})
@@ -351,6 +372,174 @@ class AuditEvent:
 
 
 @dataclass(frozen=True)
+class CallerSectionV3:
+    """v3 caller claims (B2-P1): identities are keyed references or omitted, never plaintext.
+
+    Readable: closed enumerations (assurance claim, operation, environment), the minimized
+    resource, and labels from APPROVED_READABLE_LABELS. The tool manifest digest identifies
+    the tool, so it is recorded only as ``manifest_ref`` (a K_ref reference in its own
+    namespace) and never in clear.
+
+    ``omitted_labels_count`` (omitted mode only) is the exact number of labels that were left
+    out because no K_ref was available to reference them: an int from 0 to
+    ``MAX_REQUEST_LABELS - len(readable_labels)``, 0 when nothing was omitted. It is ``None``
+    in pseudonymized mode (every such label becomes a ``label_refs`` entry) and whenever the
+    request is not ``consistent``.
+    """
+
+    consistency: RequestConsistency
+    identity_mode: IdentityMode
+    agent_ref: str | None
+    assurance_claim: Assurance | None
+    tool_ref: str | None
+    manifest_ref: str | None
+    operation: OperationClass | None
+    environment: Environment | None
+    readable_labels: tuple[str, ...] | None
+    label_refs: tuple[str, ...] | None
+    omitted_labels_count: int | None
+    resource: ResourceSection | None
+    session_ref: str | None
+    request_ref: str | None
+
+    def __post_init__(self) -> None:
+        v.require_enum(self.consistency, RequestConsistency, "caller.consistency")
+        v.require_enum(self.identity_mode, IdentityMode, "caller.identity_mode")
+        v.optional(v.require_hex32, self.agent_ref, "caller.agent_ref")
+        if self.assurance_claim is not None:
+            v.require_enum(self.assurance_claim, Assurance, "caller.assurance_claim")
+        v.optional(v.require_hex32, self.tool_ref, "caller.tool_ref")
+        v.optional(v.require_hex32, self.manifest_ref, "caller.manifest_ref")
+        if self.operation is not None:
+            v.require_enum(self.operation, OperationClass, "caller.operation")
+        if self.environment is not None:
+            v.require_enum(self.environment, Environment, "caller.environment")
+        if self.readable_labels is not None:
+            v.require_identifier_tuple(self.readable_labels, "caller.readable_labels")
+            if not set(self.readable_labels) <= APPROVED_READABLE_LABELS:
+                raise AuditError(AuditErrorCode.INVALID_FIELD, "caller.readable_labels")
+        v.optional(v.require_hex32_tuple, self.label_refs, "caller.label_refs")
+        v.optional(v.require_int, self.omitted_labels_count, "caller.omitted_labels_count", 0, MAX_REQUEST_LABELS)
+        if self.resource is not None and type(self.resource) is not ResourceSection:
+            raise AuditError(AuditErrorCode.INVALID_FIELD, "caller.resource")
+        v.optional(v.require_hex32, self.session_ref, "caller.session_ref")
+        v.optional(v.require_hex32, self.request_ref, "caller.request_ref")
+
+        identity = (self.agent_ref, self.tool_ref, self.label_refs)
+        claims = identity + (
+            self.assurance_claim, self.manifest_ref, self.operation, self.environment,
+            self.readable_labels, self.omitted_labels_count, self.resource, self.session_ref,
+            self.request_ref,
+        )
+        if self.consistency is not RequestConsistency.CONSISTENT:
+            if any(item is not None for item in claims):
+                raise AuditError(AuditErrorCode.INCONSISTENT_EVENT, "caller")
+            return
+        required = (self.assurance_claim, self.operation, self.environment, self.readable_labels, self.resource)
+        if any(item is None for item in required):
+            raise AuditError(AuditErrorCode.INCONSISTENT_EVENT, "caller")
+        readable_count = len(self.readable_labels)
+        if self.identity_mode is IdentityMode.PSEUDONYMIZED:
+            if any(item is None for item in identity):
+                raise AuditError(AuditErrorCode.INCONSISTENT_EVENT, "caller.identity_mode")
+            if self.omitted_labels_count is not None:  # nothing is omitted when K_ref exists
+                raise AuditError(AuditErrorCode.INCONSISTENT_EVENT, "caller.omitted_labels_count")
+            label_total, label_path = readable_count + len(self.label_refs), "caller.label_refs"
+        else:
+            keyed = identity + (self.manifest_ref, self.session_ref, self.request_ref)
+            if any(item is not None for item in keyed):
+                raise AuditError(AuditErrorCode.INCONSISTENT_EVENT, "caller.identity_mode")
+            if self.omitted_labels_count is None:  # zero, never absent, in omitted mode
+                raise AuditError(AuditErrorCode.INCONSISTENT_EVENT, "caller.omitted_labels_count")
+            label_total, label_path = readable_count + self.omitted_labels_count, "caller.omitted_labels_count"
+        if label_total > MAX_REQUEST_LABELS:  # M1 accepts at most MAX_REQUEST_LABELS unique labels
+            raise AuditError(AuditErrorCode.LIMIT_EXCEEDED, label_path)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "consistency": self.consistency.value,
+            "identity_mode": self.identity_mode.value,
+            "agent_ref": self.agent_ref,
+            "assurance_claim": _value(self.assurance_claim),
+            "tool_ref": self.tool_ref,
+            "manifest_ref": self.manifest_ref,
+            "operation": _value(self.operation),
+            "environment": _value(self.environment),
+            "readable_labels": None if self.readable_labels is None else list(self.readable_labels),
+            "label_refs": None if self.label_refs is None else list(self.label_refs),
+            "omitted_labels_count": self.omitted_labels_count,
+            "resource": None if self.resource is None else self.resource.to_dict(),
+            "session_ref": self.session_ref,
+            "request_ref": self.request_ref,
+        }
+
+
+@dataclass(frozen=True)
+class AuditEventV3:
+    """``rig.audit-event/v3``: same audit and engine sections as v2, privacy-hardened caller."""
+
+    audit: AuditSection
+    engine: EngineSection
+    caller: CallerSectionV3
+
+    def __post_init__(self) -> None:
+        for section, kind, path in (
+            (self.audit, AuditSection, "audit"),
+            (self.engine, EngineSection, "engine"),
+            (self.caller, CallerSectionV3, "caller"),
+        ):
+            if type(section) is not kind:
+                raise AuditError(AuditErrorCode.INVALID_FIELD, path)
+
+        scoped = self.audit.redaction_mode is RedactionMode.SCOPED
+        if scoped != (self.audit.ref_key_id is not None):
+            raise AuditError(AuditErrorCode.INCONSISTENT_EVENT, "audit.ref_key_id")
+        expected_mode = IdentityMode.PSEUDONYMIZED if scoped else IdentityMode.OMITTED
+        if self.caller.identity_mode is not expected_mode:
+            raise AuditError(AuditErrorCode.INCONSISTENT_EVENT, "caller.identity_mode")
+        if not scoped:
+            resource = self.caller.resource
+            keyed = (
+                self.caller.agent_ref, self.caller.tool_ref, self.caller.label_refs,
+                self.caller.manifest_ref, self.caller.session_ref, self.caller.request_ref,
+                None if resource is None else resource.authority_ref,
+                None if resource is None else resource.resource_ref,
+            )
+            if any(item is not None for item in keyed):
+                raise AuditError(AuditErrorCode.INCONSISTENT_EVENT, "audit.redaction_mode")
+
+        consistency = self.caller.consistency
+        if consistency is RequestConsistency.CONSISTENT and self.engine.request_digest is None:
+            raise AuditError(AuditErrorCode.INCONSISTENT_EVENT, "caller.consistency")
+        if consistency is RequestConsistency.NOT_APPLICABLE and self.engine.request_digest is not None:
+            raise AuditError(AuditErrorCode.INCONSISTENT_EVENT, "caller.consistency")
+
+        if len(self.canonical_bytes()) > v.MAX_EVENT_BYTES:
+            raise AuditError(AuditErrorCode.LIMIT_EXCEEDED, "")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": AUDIT_EVENT_SCHEMA_V3,
+            "audit": self.audit.to_dict(),
+            "engine": self.engine.to_dict(),
+            "caller": self.caller.to_dict(),
+        }
+
+    def canonical_bytes(self) -> bytes:
+        return canonical_json(self.to_dict())
+
+    @property
+    def digest(self) -> str:
+        return event_digest(self.to_dict())
+
+
+def _is_event(value: object) -> bool:
+    """Identity-only check: no ``==`` on attacker-controlled types (metaclass __eq__)."""
+    kind = type(value)
+    return kind is AuditEvent or kind is AuditEventV3
+
+
+@dataclass(frozen=True)
 class AuthTag:
     algorithm: str
     key_id: str
@@ -370,12 +559,12 @@ class AuthTag:
 class AuditEnvelope:
     """An event with its digest and an optional HMAC tag. Stored state is never inside it."""
 
-    event: AuditEvent
+    event: AuditEvent | AuditEventV3
     event_digest: str
     auth: AuthTag | None
 
     def __post_init__(self) -> None:
-        if type(self.event) is not AuditEvent:
+        if not _is_event(self.event):
             raise AuditError(AuditErrorCode.INVALID_FIELD, "event")
         v.require_sha256(self.event_digest, "event_digest")
         if self.auth is not None and type(self.auth) is not AuthTag:
@@ -384,9 +573,13 @@ class AuditEnvelope:
             raise AuditError(AuditErrorCode.LIMIT_EXCEEDED, "")
 
     @classmethod
-    def seal(cls, event: AuditEvent, auth_key: AuditKey | None) -> AuditEnvelope:
-        """Wrap ``event``; authenticate it when ``auth_key`` is given."""
-        if type(event) is not AuditEvent:
+    def seal(cls, event: AuditEvent | AuditEventV3, auth_key: AuditKey | None) -> AuditEnvelope:
+        """Wrap ``event``; authenticate it when ``auth_key`` is given.
+
+        v2 and v3 events use the same, unchanged digest and MAC construction; the event's
+        ``schema_version`` is part of the authenticated content.
+        """
+        if not _is_event(event):
             raise AuditError(AuditErrorCode.INVALID_FIELD, "event")
         body = event.to_dict()
         auth = None

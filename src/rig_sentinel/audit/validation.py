@@ -132,6 +132,19 @@ def require_identifier_tuple(value: object, path: str, *, max_items: int = MAX_L
     return value
 
 
+def require_hex32_tuple(value: object, path: str, *, max_items: int = MAX_LIST_ITEMS) -> tuple[str, ...]:
+    """A sorted, duplicate-free tuple of 32-character lowercase hex references."""
+    if type(value) is not tuple:
+        raise _fail(AuditErrorCode.INVALID_FIELD, path)
+    if len(value) > max_items:
+        raise _fail(AuditErrorCode.LIMIT_EXCEEDED, path)
+    for item in value:
+        require_hex32(item, path)
+    if list(value) != sorted(set(value)):
+        raise _fail(AuditErrorCode.INVALID_FIELD, path)  # must be sorted and unique
+    return value
+
+
 def optional(check: Any, value: object, path: str, *args: Any) -> Any:
     return None if value is None else check(value, path, *args)
 
@@ -174,19 +187,84 @@ def _id_tuple(value: object, path: str) -> tuple[str, ...]:
     return tuple(value)
 
 
-def event_from_dict(data: object) -> Any:
-    """Rebuild an :class:`~rig_sentinel.audit.events.AuditEvent` from untrusted data."""
-    from rig_sentinel.audit import events as ev
-    from rig_sentinel.policy.model import Assurance, Decision, Environment, OperationClass
-    from rig_sentinel.policy.reasons import ReasonCode
-    from rig_sentinel.policy.resources import ResourceKind
-
-    top = _table(data, ev.EVENT_FIELDS, "")
-    if top["schema_version"] != ev.AUDIT_EVENT_SCHEMA:
+def _schema_version(top: dict[str, Any], expected: str) -> None:
+    version = top["schema_version"]
+    if type(version) is not str or version != expected:
         raise _fail(AuditErrorCode.UNSUPPORTED_SCHEMA, "schema_version")
 
-    a = _table(top["audit"], ev.AUDIT_FIELDS, "audit")
-    audit = ev.AuditSection(
+
+def event_from_dict(data: object) -> Any:
+    """Rebuild a v2 :class:`~rig_sentinel.audit.events.AuditEvent` from untrusted data.
+
+    Accepts ``rig.audit-event/v2`` only; any other version, including v3, is rejected.
+    """
+    from rig_sentinel.audit import events as ev
+    from rig_sentinel.policy.model import Assurance, Environment, OperationClass
+
+    top = _table(data, ev.EVENT_FIELDS, "")
+    _schema_version(top, ev.AUDIT_EVENT_SCHEMA)
+    audit = _audit_section(top["audit"])
+    engine = _engine_section(top["engine"])
+
+    c = _table(top["caller"], ev.CALLER_FIELDS, "caller")
+    labels = None if c["labels"] is None else _id_tuple(c["labels"], "caller.labels")
+    caller = ev.CallerSection(
+        consistency=_enum(ev.RequestConsistency, c["consistency"], "caller.consistency"),
+        agent_id=c["agent_id"],
+        assurance_claim=_optional_enum(Assurance, c["assurance_claim"], "caller.assurance_claim"),
+        tool_id=c["tool_id"],
+        manifest_sha256=c["manifest_sha256"],
+        operation=_optional_enum(OperationClass, c["operation"], "caller.operation"),
+        environment=_optional_enum(Environment, c["environment"], "caller.environment"),
+        labels=labels,
+        resource=_resource_section(c["resource"]),
+        session_ref=c["session_ref"],
+        request_ref=c["request_ref"],
+        redacted_fields=c["redacted_fields"],
+    )
+    return ev.AuditEvent(audit=audit, engine=engine, caller=caller)
+
+
+def event_v3_from_dict(data: object) -> Any:
+    """Rebuild a v3 :class:`~rig_sentinel.audit.events.AuditEventV3` from untrusted data.
+
+    Accepts ``rig.audit-event/v3`` only; a v2 event is never reinterpreted as v3.
+    """
+    from rig_sentinel.audit import events as ev
+    from rig_sentinel.policy.model import Assurance, Environment, OperationClass
+
+    top = _table(data, ev.EVENT_FIELDS, "")
+    _schema_version(top, ev.AUDIT_EVENT_SCHEMA_V3)
+    audit = _audit_section(top["audit"])
+    engine = _engine_section(top["engine"])
+
+    c = _table(top["caller"], ev.CALLER_V3_FIELDS, "caller")
+    readable = None if c["readable_labels"] is None else _id_tuple(c["readable_labels"], "caller.readable_labels")
+    label_refs = None if c["label_refs"] is None else _id_tuple(c["label_refs"], "caller.label_refs")
+    caller = ev.CallerSectionV3(
+        consistency=_enum(ev.RequestConsistency, c["consistency"], "caller.consistency"),
+        identity_mode=_enum(ev.IdentityMode, c["identity_mode"], "caller.identity_mode"),
+        agent_ref=c["agent_ref"],
+        assurance_claim=_optional_enum(Assurance, c["assurance_claim"], "caller.assurance_claim"),
+        tool_ref=c["tool_ref"],
+        manifest_ref=c["manifest_ref"],
+        operation=_optional_enum(OperationClass, c["operation"], "caller.operation"),
+        environment=_optional_enum(Environment, c["environment"], "caller.environment"),
+        readable_labels=readable,
+        label_refs=label_refs,
+        omitted_labels_count=c["omitted_labels_count"],
+        resource=_resource_section(c["resource"]),
+        session_ref=c["session_ref"],
+        request_ref=c["request_ref"],
+    )
+    return ev.AuditEventV3(audit=audit, engine=engine, caller=caller)
+
+
+def _audit_section(data: object) -> Any:
+    from rig_sentinel.audit import events as ev
+
+    a = _table(data, ev.AUDIT_FIELDS, "audit")
+    return ev.AuditSection(
         event_id=a["event_id"],
         correlation_id=a["correlation_id"],
         recorded_at=a["recorded_at"],
@@ -194,7 +272,13 @@ def event_from_dict(data: object) -> Any:
         ref_key_id=a["ref_key_id"],
     )
 
-    e = _table(top["engine"], ev.ENGINE_FIELDS, "engine")
+
+def _engine_section(data: object) -> Any:
+    from rig_sentinel.audit import events as ev
+    from rig_sentinel.policy.model import Decision
+    from rig_sentinel.policy.reasons import ReasonCode
+
+    e = _table(data, ev.ENGINE_FIELDS, "engine")
     approval = None
     if e["approval"] is not None:
         p = _table(e["approval"], ev.APPROVAL_FIELDS, "engine.approval")
@@ -204,7 +288,7 @@ def event_from_dict(data: object) -> Any:
             request_binding_sha256=p["request_binding_sha256"],
             ttl_seconds=p["ttl_seconds"],
         )
-    engine = ev.EngineSection(
+    return ev.EngineSection(
         decision=_enum(Decision, e["decision"], "engine.decision"),
         reason_code=_enum(ReasonCode, e["reason_code"], "engine.reason_code"),
         decision_ref=e["decision_ref"],
@@ -225,39 +309,29 @@ def event_from_dict(data: object) -> Any:
         request_digest=e["request_digest"],
     )
 
-    c = _table(top["caller"], ev.CALLER_FIELDS, "caller")
-    resource = None
-    if c["resource"] is not None:
-        r = _table(c["resource"], ev.RESOURCE_FIELDS, "caller.resource")
-        resource = ev.ResourceSection(
-            kind=_enum(ResourceKind, r["kind"], "caller.resource.kind"),
-            depth=r["depth"],
-            authority_ref=r["authority_ref"],
-            resource_ref=r["resource_ref"],
-        )
-    labels = None if c["labels"] is None else _id_tuple(c["labels"], "caller.labels")
-    caller = ev.CallerSection(
-        consistency=_enum(ev.RequestConsistency, c["consistency"], "caller.consistency"),
-        agent_id=c["agent_id"],
-        assurance_claim=_optional_enum(Assurance, c["assurance_claim"], "caller.assurance_claim"),
-        tool_id=c["tool_id"],
-        manifest_sha256=c["manifest_sha256"],
-        operation=_optional_enum(OperationClass, c["operation"], "caller.operation"),
-        environment=_optional_enum(Environment, c["environment"], "caller.environment"),
-        labels=labels,
-        resource=resource,
-        session_ref=c["session_ref"],
-        request_ref=c["request_ref"],
-        redacted_fields=c["redacted_fields"],
+
+def _resource_section(data: object) -> Any:
+    from rig_sentinel.audit import events as ev
+    from rig_sentinel.policy.resources import ResourceKind
+
+    if data is None:
+        return None
+    r = _table(data, ev.RESOURCE_FIELDS, "caller.resource")
+    return ev.ResourceSection(
+        kind=_enum(ResourceKind, r["kind"], "caller.resource.kind"),
+        depth=r["depth"],
+        authority_ref=r["authority_ref"],
+        resource_ref=r["resource_ref"],
     )
-    return ev.AuditEvent(audit=audit, engine=engine, caller=caller)
 
 
 def envelope_from_dict(data: object) -> Any:
     """Rebuild an :class:`~rig_sentinel.audit.events.AuditEnvelope` from untrusted data.
 
-    Only the structure is checked here; whether ``event_digest`` and the MAC
-    match is decided by :meth:`AuditEnvelope.verify`.
+    The event is parsed by exactly one schema, chosen by its ``schema_version``
+    (v2 or v3); anything else is rejected. Only the structure is checked here;
+    whether ``event_digest`` and the MAC match is decided by
+    :meth:`AuditEnvelope.verify`.
     """
     from rig_sentinel.audit import events as ev
 
@@ -268,8 +342,10 @@ def envelope_from_dict(data: object) -> Any:
     if top["auth"] is not None:
         t = _table(top["auth"], ev.AUTH_FIELDS, "auth")
         auth = ev.AuthTag(algorithm=t["algorithm"], key_id=t["key_id"], mac=t["mac"])
-    return ev.AuditEnvelope(
-        event=event_from_dict(top["event"]),
-        event_digest=top["event_digest"],
-        auth=auth,
-    )
+    event_data = top["event"]
+    version = event_data.get("schema_version") if type(event_data) is dict else None
+    if type(version) is str and version == ev.AUDIT_EVENT_SCHEMA_V3:
+        event = event_v3_from_dict(event_data)
+    else:
+        event = event_from_dict(event_data)  # v2, or rejected
+    return ev.AuditEnvelope(event=event, event_digest=top["event_digest"], auth=auth)
