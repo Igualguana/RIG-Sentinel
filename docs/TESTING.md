@@ -10,17 +10,27 @@ python -m pytest -q
 The suite uses only `pytest` (installed by the `dev` extra) and the standard library. It
 needs no network access and no credentials.
 
-Current suite, including the unreleased policy engine: **913 tests** in 49 test modules
-under `tests/`, plus the shared helper `tests/policy_fixtures.py` (not a test module):
+Current suite on the Genesis B2-M2-B development branch: **1,303 tests** in 56 test
+modules under `tests/`, plus the shared helpers `tests/policy_fixtures.py` and
+`tests/audit_fixtures.py` (not test modules):
 
 | Group | Modules | Tests |
 |---|---|---|
 | Scanner and CLI tests from v0.1.0 | 36 | 179 |
 | Policy engine, Genesis B2-M1 | 11 | 412 |
 | Policy engine hardening and limits | 2 | 322 |
-| **Total** | **49** | **913** |
+| Policy engine `error_type` hardening (M1-H1) | 1 | 100 |
+| Audit foundation, Genesis B2-M2-B (`test_audit_*.py`) | 6 | 290 |
+| **Total** | **56** | **1,303** |
 
-The v0.1.0 release had 179 tests; the other 734 test the unreleased policy engine.
+The v0.1.0 release had 179 tests; the others test the unreleased policy engine and audit
+foundation. `main` currently has 1,013 tests, everything except the audit foundation.
+
+To run only the audit foundation tests:
+
+```bash
+python -m pytest -q tests/test_audit_*.py
+```
 
 To run only the policy engine tests:
 
@@ -42,9 +52,10 @@ To make any warning fail the run, add `-W error::Warning`.
 
 ## Validation status
 
+**Previously validated in CI** (Python 3.13):
+
 | Where | Scope | Result |
 |---|---|---|
-| Local, Windows 11, Python 3.13.2 | Full suite (913 tests) from a clean, non-editable install in a fresh virtual environment, with `-W error::Warning` | 913 passed, 0 failed, 0 skipped, 0 warnings |
 | GitHub Actions (Ubuntu 24.04, Ubuntu 26.04, macOS 15 Intel, macOS Apple Silicon) | v0.1.0 (179 tests) | Passed for the v0.1.0 release candidate |
 | GitHub Actions, Ubuntu 24.04 (x86_64, Python 3.13) | Genesis B2-M1 pull request (913 tests) | 913 passed |
 | GitHub Actions, Ubuntu 26.04 (x86_64, Python 3.13) | Genesis B2-M1 pull request (913 tests) | 913 passed |
@@ -58,8 +69,23 @@ release, which contains only the 179 scanner and CLI tests. In CI, each job also
 CLI, generated the HTML and SARIF reports and validated the SARIF 2.1.0 output. CI runs
 `python -m pytest -q` without `-W error::Warning`.
 
-Python 3.11 and 3.12 are declared as supported but are not exercised by CI or by the local
-validation above.
+The M1-H1 `error_type` hardening was validated the same way: **1,013 passed** on each of
+the four platforms for its pull request (commit `b8583cc` merged with `main`, workflow runs
+42703580034 and 42703579962) and again on `main` after the merge (commit `7654020`, workflow
+runs 42871476503 and 42871476496).
+
+**Genesis B2-M2-B audit foundation, local only (not yet run in CI):**
+
+| Where | Scope | Result |
+|---|---|---|
+| Local, Windows 11 (x64), Python 3.13.2 | Full suite (1,303 tests) from a clean, non-editable install in a fresh virtual environment, with `-W error::Warning` | 1,303 passed, 0 failed, 0 skipped, 0 warnings |
+| Same environment | The 1,013 tests that predate the audit foundation | 1,013 passed |
+| Same environment | Audit foundation tests (`tests/test_audit_*.py`) | 290 passed |
+
+**Not yet tested:**
+- the audit foundation in GitHub Actions on Linux or macOS;
+- Python 3.11 and 3.12 for any part of the suite. They are declared as supported but are
+  exercised neither by CI nor by the local validation above.
 
 ## Continuous integration
 
@@ -93,7 +119,8 @@ Tests mirror the modules in `src/rig_sentinel/` and `src/rig_sentinel/policy/`:
 | Policy engine: loading, validation and digests | `test_policy_loader.py`, `test_policy_validation.py`, `test_policy_canonical.py` |
 | Policy engine: decisions | `test_policy_engine.py`, `test_policy_engine_adversarial.py`, `test_policy_determinism.py` |
 | Policy engine: isolation from the scanner, CLI and I/O | `test_policy_isolation.py` |
-| Policy engine: hardening and limits | `test_policy_hardening.py` (aliases, carve-outs, Unicode, trust boundary, fail-closed boundary), `test_policy_limits.py` (size and worst-case inputs) |
+| Policy engine: hardening and limits | `test_policy_hardening.py` (aliases, carve-outs, Unicode, trust boundary, fail-closed boundary), `test_policy_limits.py` (size and worst-case inputs), `test_policy_error_type_hardening.py` (untrusted exception classes) |
+| Audit foundation | `test_audit_keys_and_chain.py` (keys, digests, HMAC known answers), `test_audit_events.py` (schema, tampering, limits), `test_audit_builder.py` (provenance, privacy, canaries), `test_audit_builder_hardening.py` (record snapshot, exception boundaries, redaction bound), `test_audit_sinks.py` (`MemorySink`, receipts, concurrency), `test_audit_isolation.py` (no I/O, no dependency from the policy package) |
 | Reports and CLI | `test_html_report.py`, `test_html_cli_integration.py`, `test_sarif_report.py`, `test_scan.py` |
 | End to end | `test_scanner.py`, `test_models.py` |
 | Precision regressions | `test_precision_external.py` |
