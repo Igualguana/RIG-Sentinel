@@ -43,6 +43,15 @@ its API and schema may change before a release.
   [docs/TESTING.md](docs/TESTING.md#validation-status).
 - **Documentation:** `docs/POLICY_ENGINE.md`, `docs/THREAT_MODEL.md`, and updates to the
   README, architecture and testing documents.
+- **Audit foundation (Genesis B2-M2-B, in-memory only):** the new package `rig_sentinel.audit`.
+  - **Events:** versioned, privacy-minimized `rig.audit-event/v2` events built from M1
+    decision records, with fields grouped by provenance (audit, engine, caller claims).
+  - **Keys:** HMAC-SHA-256 pseudonyms under a dedicated key (`K_ref`, never an unkeyed hash)
+    and HMAC-authenticated envelopes under a separate key (`K_auth`).
+  - **Validation and storage:** closed-schema validation, and a bounded `MemorySink` whose
+    receipts are never stored inside events.
+  - **Scope:** no persistence, ordering chain, key storage or enforcement yet. The policy
+    package does not depend on it. See `docs/AUDIT.md`.
 
 ### Security
 
