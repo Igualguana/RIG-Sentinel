@@ -10,7 +10,7 @@ python -m pytest -q
 The suite uses only `pytest` (installed by the `dev` extra) and the standard library. It
 needs no network access and no credentials.
 
-Current suite on the Genesis B2-P1 development branch: **1,480 tests** in 58 test
+Current suite on the Genesis B2-P2 development branch: **1,913 tests** in 61 test
 modules under `tests/`, plus the shared helpers `tests/policy_fixtures.py` and
 `tests/audit_fixtures.py` (not test modules):
 
@@ -23,12 +23,15 @@ modules under `tests/`, plus the shared helpers `tests/policy_fixtures.py` and
 | Audit foundation, Genesis B2-M2-B | 6 | 290 |
 | Audit privacy hardening, Genesis B2-P1 (`test_audit_p1_privacy.py`) | 1 | 110 |
 | B2-P1 security review remediation (`test_audit_p1_remediation.py`) | 1 | 67 |
-| **Total** | **58** | **1,480** |
+| Privacy-safe audit projection, Genesis B2-P2 (`test_audit_p2_projection.py`) | 1 | 177 |
+| B2-P2 security review hardening (`test_audit_p2_hardening.py`) | 1 | 100 |
+| B2-P2 persistence gate and fidelity (`test_audit_p2_gate_fidelity.py`) | 1 | 156 |
+| **Total** | **61** | **1,913** |
 
 The v0.1.0 release had 179 tests; the others test the unreleased policy engine and audit
-foundation. `main` currently has 1,303 tests, everything except the B2-P1 privacy hardening.
+foundation. `main` (commit `c55a120`) has 1,480 tests, everything except B2-P2.
 
-To run only the audit tests (M2-B and B2-P1):
+To run only the audit tests (M2-B, B2-P1 and B2-P2):
 
 ```bash
 python -m pytest -q tests/test_audit_*.py
@@ -87,7 +90,16 @@ each of the four platforms on `main` (commit `9c9b364`).
 | Same environment | The 1,013 tests that predate the audit foundation | 1,013 passed |
 | Same environment | Audit foundation tests (`tests/test_audit_*.py`) | 290 passed |
 
-**Genesis B2-P1 privacy hardening, local only (not yet run in CI):**
+The B2-P1 privacy hardening was validated in GitHub Actions for its pull request:
+**1,480 passed** on each of the four platforms (commit `b0ab77f` tested as merged with `main`,
+test merge `dd8ee52`, workflow runs 43091281887 and 43091281943). It was validated again on
+`main` after the merge: **1,480 passed** on each of the four platforms, with valid SARIF 2.1.0
+and successful CLI checks (commit `c55a1205059733511415d7de9a79e07408f63312`, workflow runs
+43269948179 and 43269953079, started manually with `workflow_dispatch`). The automatic
+post-merge push runs (43096124171 and 43096124165) were left orphaned in `queued` by a GitHub
+Actions incident on 2026-11-11; they never started any job and GitHub refuses to cancel them.
+
+**Genesis B2-P1 privacy hardening, local validation before its pull request:**
 
 | Where | Scope | Result |
 |---|---|---|
@@ -97,8 +109,18 @@ each of the four platforms on `main` (commit `9c9b364`).
 | Same environment | B2-P1 security review remediation tests (`tests/test_audit_p1_remediation.py`) | 67 passed |
 | Local mutation check | 41 targeted B2-P1 mutations (gate, builder, v3 model, parsers, manifest privacy, omitted-label accounting) and the 20 earlier M2-B mutations, each applied to a scratch copy of `src/` | All 61 detected by the audit tests |
 
+**Genesis B2-P2 privacy-safe audit projection (development branch, not merged), local only (not yet run in CI):**
+
+| Where | Scope | Result |
+|---|---|---|
+| Local, Windows 11 (x64), Python 3.13.2 | Full suite (1,913 tests) from a clean, non-editable install in a fresh virtual environment, with `-W error::Warning` | 1,913 passed, 0 failed, 0 skipped, 0 warnings |
+| Same environment | The 1,480 tests on `main` (only the module-name line of `test_audit_isolation.py` changed) | 1,480 passed |
+| Same environment | B2-P2 tests (`test_audit_p2_projection.py`, `test_audit_p2_hardening.py`, `test_audit_p2_gate_fidelity.py`) | 433 passed |
+| Local mutation check | 79 targeted B2-P2 mutations (projector, keys, references, approver contract, schema coupling, parsers, persistence gate, fidelity verification), the 41 B2-P1 mutations and the 20 M2-B mutations, each applied to a scratch copy of `src/` | All 140 detected by the audit tests |
+| Local equivalence check | M1 decision records and v2/v3 envelopes for a fixed corpus, compared with `main` | Byte-identical |
+
 **Not yet tested:**
-- the B2-P1 privacy hardening in GitHub Actions on Linux or macOS;
+- the B2-P2 projection in GitHub Actions on Linux or macOS (its pull-request runs will be the first);
 - Python 3.11 and 3.12 for any part of the suite. They are declared as supported but are
   exercised neither by CI nor by the local validation above.
 
@@ -135,7 +157,7 @@ Tests mirror the modules in `src/rig_sentinel/` and `src/rig_sentinel/policy/`:
 | Policy engine: decisions | `test_policy_engine.py`, `test_policy_engine_adversarial.py`, `test_policy_determinism.py` |
 | Policy engine: isolation from the scanner, CLI and I/O | `test_policy_isolation.py` |
 | Policy engine: hardening and limits | `test_policy_hardening.py` (aliases, carve-outs, Unicode, trust boundary, fail-closed boundary), `test_policy_limits.py` (size and worst-case inputs), `test_policy_error_type_hardening.py` (untrusted exception classes) |
-| Audit foundation | `test_audit_keys_and_chain.py` (keys, digests, HMAC known answers), `test_audit_events.py` (schema, tampering, limits), `test_audit_builder.py` (provenance, privacy, canaries), `test_audit_builder_hardening.py` (record snapshot, exception boundaries, redaction bound), `test_audit_sinks.py` (`MemorySink`, receipts, concurrency), `test_audit_isolation.py` (no I/O, no dependency from the policy package), `test_audit_p1_privacy.py` (B2-P1: v2/v3 compatibility, identity modes, reference vectors and domain separation, label allowlist, canaries, persistence gate), `test_audit_p1_remediation.py` (B2-P1 security review fixes: manifest reference, omitted-label count, cross-version confusion) |
+| Audit foundation | `test_audit_keys_and_chain.py` (keys, digests, HMAC known answers), `test_audit_events.py` (schema, tampering, limits), `test_audit_builder.py` (provenance, privacy, canaries), `test_audit_builder_hardening.py` (record snapshot, exception boundaries, redaction bound), `test_audit_sinks.py` (`MemorySink`, receipts, concurrency), `test_audit_isolation.py` (no I/O, no dependency from the policy package), `test_audit_p1_privacy.py` (B2-P1: v2/v3 compatibility, identity modes, reference vectors and domain separation, label allowlist, canaries, persistence gate), `test_audit_p1_remediation.py` (B2-P1 security review fixes: manifest reference, omitted-label count, cross-version confusion), `test_audit_p2_projection.py` (B2-P2 projection: K_eref and reference vectors, approver contract, profiles and downgrade prevention, tampered sources, schema confusion, envelope v2 authenticity), `test_audit_p2_hardening.py` (B2-P2 review fixes: positive unlinked pairing, exception context and `BaseException` policy, every v3 request-digest state, approver fidelity), `test_audit_p2_gate_fidelity.py` (B2-P2 persistence gate, deep privacy scan, key epochs, fidelity `MATCH`/`MISMATCH`/`NOT_VERIFIABLE`, compatibility alias) |
 | Reports and CLI | `test_html_report.py`, `test_html_cli_integration.py`, `test_sarif_report.py`, `test_scan.py` |
 | End to end | `test_scanner.py`, `test_models.py` |
 | Precision regressions | `test_precision_external.py` |

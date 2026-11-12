@@ -33,6 +33,8 @@ class AuditErrorCode(StrEnum):
     KEY_INVALID = "KEY_INVALID"
     KEY_PURPOSE_MISMATCH = "KEY_PURPOSE_MISMATCH"
     KEYS_NOT_INDEPENDENT = "KEYS_NOT_INDEPENDENT"
+    REF_KEY_REQUIRED = "REF_KEY_REQUIRED"  # a keyed projection needs K_ref (B2-P2)
+    REF_KEY_EPOCH_MISMATCH = "REF_KEY_EPOCH_MISMATCH"  # K_ref is not the source event's epoch (B2-P2)
 
     # Sinks
     INVALID_ENVELOPE = "INVALID_ENVELOPE"

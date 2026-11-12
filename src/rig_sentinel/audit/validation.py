@@ -231,17 +231,24 @@ def event_v3_from_dict(data: object) -> Any:
     Accepts ``rig.audit-event/v3`` only; a v2 event is never reinterpreted as v3.
     """
     from rig_sentinel.audit import events as ev
-    from rig_sentinel.policy.model import Assurance, Environment, OperationClass
 
     top = _table(data, ev.EVENT_FIELDS, "")
     _schema_version(top, ev.AUDIT_EVENT_SCHEMA_V3)
     audit = _audit_section(top["audit"])
     engine = _engine_section(top["engine"])
+    caller = _caller_v3_section(top["caller"])
+    return ev.AuditEventV3(audit=audit, engine=engine, caller=caller)
 
-    c = _table(top["caller"], ev.CALLER_V3_FIELDS, "caller")
+
+def _caller_v3_section(data: object) -> Any:
+    """Parse a v3 caller section (shared by v3 events and B2-P2 projections)."""
+    from rig_sentinel.audit import events as ev
+    from rig_sentinel.policy.model import Assurance, Environment, OperationClass
+
+    c = _table(data, ev.CALLER_V3_FIELDS, "caller")
     readable = None if c["readable_labels"] is None else _id_tuple(c["readable_labels"], "caller.readable_labels")
     label_refs = None if c["label_refs"] is None else _id_tuple(c["label_refs"], "caller.label_refs")
-    caller = ev.CallerSectionV3(
+    return ev.CallerSectionV3(
         consistency=_enum(ev.RequestConsistency, c["consistency"], "caller.consistency"),
         identity_mode=_enum(ev.IdentityMode, c["identity_mode"], "caller.identity_mode"),
         agent_ref=c["agent_ref"],
@@ -257,7 +264,6 @@ def event_v3_from_dict(data: object) -> Any:
         session_ref=c["session_ref"],
         request_ref=c["request_ref"],
     )
-    return ev.AuditEventV3(audit=audit, engine=engine, caller=caller)
 
 
 def _audit_section(data: object) -> Any:
