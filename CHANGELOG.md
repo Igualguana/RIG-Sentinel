@@ -75,6 +75,28 @@ its API and schema may change before a release.
     Pseudonymized events remain linkable and are not anonymous, and the engine section keeps
     M1's unkeyed request digest. No persistent storage or runtime enforcement. See
     `docs/AUDIT.md`.
+- **Privacy-safe audit projection (Genesis B2-P2, in-memory only):** the representation
+  intended for future persistent storage, in the new module `rig_sentinel.audit.projection`.
+  - **Projection** `rig.audit-projection/v1` sealed in `rig.audit-envelope/v2` (own digest and
+    MAC domains, mandatory MAC). `project()` verifies a sealed v3 envelope (exact types, closed
+    re-parse, K_auth) before transforming it. M1's unkeyed request digest, decision digest and
+    approval request binding become HMAC references under a derived key K_eref (new key purpose
+    `ENGINE_REF`), each in its own domain. Raw approver ids become keyed references, and the
+    v3 event digest and MAC are never copied.
+  - **Profiles:** `KEYED` (the default) needs the source's K_ref epoch; `UNLINKED` (no engine
+    references) only by explicit selection and only for `no-ref-key` sources. There is never
+    an automatic fallback.
+  - **Persistence gate** `check_projection_persistable()`: pure, no I/O. It accepts only
+    authentic projection envelopes that re-parse to identical bytes, pass a deep privacy scan
+    and match an optional key epoch, and it returns the exact bytes to persist as a
+    gate-issued `ValidatedProjection`. v1 envelopes (v2 and v3 events) are refused.
+  - **Fidelity verification** `verify_projection_fidelity()` returns `MATCH`, `MISMATCH` or
+    `NOT_VERIFIABLE` against an original M1 `DecisionRecord`. It proves neither provenance,
+    execution nor enforcement.
+  - `check_v3_projection_source` is a new alias for `check_persistable` (unchanged), which is
+    now documented as a projection precondition rather than permission to persist.
+  - M1, the v2/v3 events and `MemorySink` are unchanged. No persistent storage or runtime
+    enforcement (M2-C, Genesis D). See `docs/AUDIT.md`.
 
 ### Security
 

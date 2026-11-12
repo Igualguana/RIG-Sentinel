@@ -27,11 +27,14 @@ from rig_sentinel.audit.errors import AuditError, AuditErrorCode
 KEY_BYTES = 32
 _SEPARATOR = bytes(1)
 _KEY_ID_DOMAIN = b"rig.audit-key-id/v1"
+_KEY_DERIVE_DOMAIN = b"rig.audit-key-derive/v1"
+_DERIVED = object()  # private capability: only derive_engine_ref_key() may build ENGINE_REF keys
 
 
 class KeyPurpose(StrEnum):
     REF = "ref"
     AUTH = "auth"
+    ENGINE_REF = "engine-ref"  # B2-P2: derived from K_ref; keys engine references only
 
 
 class AuditKey:
@@ -39,9 +42,11 @@ class AuditKey:
 
     __slots__ = ("_purpose", "_material", "_key_id")
 
-    def __init__(self, purpose: KeyPurpose, material: bytes) -> None:
+    def __init__(self, purpose: KeyPurpose, material: bytes, *, _derivation: object = None) -> None:
         if type(purpose) is not KeyPurpose:
             raise AuditError(AuditErrorCode.KEY_INVALID, "purpose")
+        if purpose is KeyPurpose.ENGINE_REF and _derivation is not _DERIVED:
+            raise AuditError(AuditErrorCode.KEY_INVALID, "purpose")  # no raw-bytes constructor
         if type(material) is not bytes or len(material) != KEY_BYTES:
             raise AuditError(AuditErrorCode.KEY_INVALID, "material")
         if material == bytes(KEY_BYTES):
@@ -103,6 +108,23 @@ class AuditKey:
 
     def __deepcopy__(self, memo: object) -> AuditKey:
         return self
+
+
+def derive_engine_ref_key(ref_key: AuditKey) -> AuditKey:
+    """Derive K_eref = HMAC-SHA-256(K_ref, ``rig.audit-key-derive/v1`` NUL ``engine-ref``) (B2-P2).
+
+    The result has purpose ``ENGINE_REF`` and keys only engine references in projections.
+    It gives purpose and domain separation, not independent compromise: whoever holds
+    K_ref can derive it.
+    """
+    if type(ref_key) is not AuditKey:
+        raise AuditError(AuditErrorCode.KEY_INVALID, "ref")
+    if ref_key.purpose is not KeyPurpose.REF:
+        raise AuditError(AuditErrorCode.KEY_PURPOSE_MISMATCH, "ref")
+    material = hmac.new(
+        ref_key._material, _KEY_DERIVE_DOMAIN + _SEPARATOR + b"engine-ref", hashlib.sha256
+    ).digest()
+    return AuditKey(KeyPurpose.ENGINE_REF, material, _derivation=_DERIVED)
 
 
 @dataclass(frozen=True)

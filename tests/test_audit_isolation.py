@@ -40,7 +40,7 @@ def test_expected_audit_modules_exist():
     names = {path.name for path in AUDIT_FILES}
     assert names == {
         "__init__.py", "builder.py", "chain.py", "errors.py", "events.py", "keys.py",
-        "redaction.py", "sinks.py", "validation.py",
+        "projection.py", "redaction.py", "sinks.py", "validation.py",
     }
 
 

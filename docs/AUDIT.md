@@ -1,8 +1,11 @@
-# Audit Foundation (Genesis B2-M2-B, B2-P1 privacy hardening)
+# Audit Foundation (Genesis B2-M2-B, B2-P1 privacy hardening, B2-P2 projection)
 
 > **Status: development, unreleased.** M2-B is the pure, in-memory foundation of the audit
-> subsystem; B2-P1 adds an opt-in privacy-hardened event schema (`rig.audit-event/v3`) and
-> a persistence privacy gate (see [Schema v3](#schema-v3-b2-p1-privacy-hardening)). It is
+> subsystem. B2-P1 (merged into `main`) adds an opt-in privacy-hardened event schema
+> (`rig.audit-event/v3`). B2-P2 (a development branch, **not merged**) adds the privacy-safe
+> audit projection (`rig.audit-projection/v1`), the persistence gate for projections and
+> optional fidelity verification (see
+> [Privacy-safe audit projection](#privacy-safe-audit-projection-b2-p2)). It is
 > **not** a complete or production audit log:
 > - there is no persistence, cross-event ordering chain, checkpointing, key storage or rotation (M2-C);
 > - nothing yet evaluates and audits in one step, and there are no failure modes (M2-D).
@@ -33,7 +36,8 @@ caller ──▶ PolicyEngine.evaluate(request) ──▶ DecisionRecord        
 |---|---|
 | `events.py` | Frozen models, the `rig.audit-event/v2` and `rig.audit-event/v3` events, the `rig.audit-envelope/v1` envelope, and envelope sealing and verification |
 | `builder.py` | `AuditEventBuilder`: `DecisionRecord` + original request → event or envelope (v2 by default, v3 when selected) |
-| `redaction.py` | Resource minimization, keyed references, credential-like identifier filter, `error_type` mapping, and the persistence privacy gate `check_persistable` |
+| `redaction.py` | Resource minimization, keyed references, credential-like identifier filter, `error_type` mapping, and the v3 source check `check_persistable` (alias `check_v3_projection_source`) |
+| `projection.py` | B2-P2: projection schema, projector, `check_projection_persistable` gate, `verify_projection_fidelity` |
 | `validation.py` | Field checks and closed-schema parsers for untrusted dictionaries (`event_from_dict` for v2, `event_v3_from_dict` for v3) |
 | `chain.py` | Canonical digests, HMAC-SHA-256, pseudonyms, constant-time comparison, `AuthStatus` |
 | `keys.py` | `AuditKey` and `AuditKeys`: in-memory keys with purpose binding |
@@ -183,11 +187,17 @@ the value. `readable_labels=None` means the full approved set. Labels that are n
 become `label_refs` in `pseudonymized` mode and are dropped and counted in
 `omitted_labels_count` in `omitted` mode.
 
-### Persistence privacy gate
+### v3 source check (`check_persistable`)
 
-`check_persistable(envelope, keys, *, readable_labels=None) -> PersistenceVerdict` is the check
-a future persistent sink must pass before storing an envelope. It is **not** a sink and stores
-nothing. It accepts an envelope only if all of the following hold:
+> **Superseded for persistence by B2-P2.** v3 events still contain M1's unkeyed request,
+> decision and approval-binding digests, so a v3 envelope must **not** be persisted. Its
+> behaviour is unchanged, and `check_v3_projection_source` is the preferred alias, but it is
+> now a *precondition for projection*. Only `check_projection_persistable` (B2-P2) authorizes
+> persistence, and only for projection envelopes.
+
+`check_persistable(envelope, keys, *, readable_labels=None) -> PersistenceVerdict` was introduced
+in P1 as the check for a future persistent sink. It is **not** a sink and stores nothing. It
+accepts an envelope only if all of the following hold:
 
 1. it is an `AuditEnvelope` (exact type) whose event is v3. v2 events are refused with `v2_event_not_persistable`;
 2. its digest and MAC verify under `keys`. There is no unauthenticated mode and no option to skip or downgrade verification: unsealed envelopes, unknown keys, bad MACs and bad digests are refused with their own codes;
@@ -220,11 +230,112 @@ need their own review.
 
 - **Pseudonymization is not anonymity.** References are stable for a given K_ref, so all events of one agent, tool, manifest, label, session or resource can be linked to each other. Anyone who holds K_ref can confirm a guessed identifier by recomputing its reference, and so can test a list of candidate names.
 - **Readable fields still carry information.** Assurance, operation, environment, resource kind and depth, timestamps, policy and rule ids, the approved labels and `omitted_labels_count` stay readable; together they can make events correlatable or identifiable.
-- **The engine section keeps M1's unkeyed digests.** `engine.request_digest` (and `decision_ref`, which covers it) are unkeyed SHA-256 digests of the full canonical request, including agent id, tool id, manifest digest, labels, resource and any session or request id. Someone who can guess *every* field of a request can confirm the guess against them. Random session or request ids make this impractical, but requests without them may have a small guessing space. These digests are kept unchanged because M1's decision and request-digest semantics must not change in P1; keying or removing them from persistent events is an open design question.
+- **The engine section keeps M1's unkeyed digests.** `engine.request_digest` (and `decision_ref`, which covers it) are unkeyed SHA-256 digests of the full canonical request, including agent id, tool id, manifest digest, labels, resource and any session or request id. Someone who can guess *every* field of a request can confirm the guess against them. Random session or request ids make this impractical, but requests without them may have a small guessing space. These digests are kept unchanged because M1's decision and request-digest semantics must not change. B2-P2 removes them from everything intended for persistence (see [Privacy-safe audit projection](#privacy-safe-audit-projection-b2-p2)).
+- **The approval block carries an unkeyed request binding and readable approver ids.** On `REQUIRE_APPROVAL` decisions, `engine.approval.request_binding_sha256` is M1's unkeyed SHA-256 over agent id, tool id, operation, resource, environment, session id and `policy_sha256`. In a v3 event, operation, environment and `policy_sha256` are readable, so this is an *easier* guess-confirmation target than `request_digest`. `engine.approval.eligible_approvers` holds up to 32 policy approver ids in clear, and those ids can name people. Both are removed or keyed by B2-P2 projections.
 - **Forged but well-formed content.** The schema can't tell a genuine reference from any other 32-hex string, or a genuine count from any other in-range count. Only the MAC protects these, so any holder of K_auth can seal well-formed but false values.
 - **K_ref epochs.** A new K_ref produces unrelated references, so events from different keys can't be correlated by reference. There is no rotation or epoch management yet (M2-C).
 - **Omitted mode loses information.** Without K_ref, identities, the manifest digest, non-approved labels (only their number is kept) and session and request ids are not recorded.
 - **No storage and no enforcement.** P1 adds no persistence (JSONL is M2-C), and events still record decisions only; nothing blocks a tool call at runtime.
+
+**How B2-P2 limits these residuals:** v3 events and their unkeyed digests stay in memory. The
+representation intended for persistence is the separately authenticated projection (its own
+envelope schema, digest and MAC domains), in which M1's unkeyed request digest, decision digest
+and approval request binding are replaced by keyed references, raw approver ids by keyed
+references, and the v3 event digest and MAC are dropped. The persistence gate refuses every v1
+envelope (v2 and v3 events). The residuals still apply to any v3 event kept in memory, logged or
+exported by other means.
+
+## Privacy-safe audit projection (B2-P2)
+
+A **projection** is the only representation intended for persistent storage. It is derived from
+an already sealed v3 envelope, and no v2 or v3 envelope may be persisted.
+
+```text
+DecisionRecord + request ─▶ AuditEventBuilder(v3) ─▶ AuditEnvelope v1 {v3}  (in memory)
+        project(envelope, keys, profile=KEYED | UNLINKED)
+          1. exact types; closed re-parse to identical bytes; digest + MAC under K_auth
+          2. profile pairing read from the re-parsed bytes: KEYED <-> exactly scoped,
+             UNLINKED <-> exactly no-ref-key (explicit opt-in only; never a fallback)
+          3. keyed references; raw digests, approver ids, v3 event_digest and MAC dropped
+          4. seal as rig.audit-envelope/v2 { rig.audit-projection/v1 } with K_auth
+        check_projection_persistable(projection_envelope, keyring, ...) ─▶ ValidatedProjection
+        (a future M2-C sink writes ValidatedProjection.canonical; not implemented)
+```
+
+### What changes in the engine section
+
+| v3 field | Projection |
+|---|---|
+| `request_digest` (unkeyed) | `request_ref` = HMAC(K_eref, `rig.audit-engine-ref/v1/request-digest` NUL digest)[:128 bits] |
+| `decision_ref` (unkeyed M1 `decision_digest`) | `decision_ref_keyed` (domain `.../decision-digest`) |
+| `approval.request_binding_sha256` (unkeyed) | `approval.binding_ref` (domain `.../approval-binding`) |
+| `approval.eligible_approvers` (raw ids) | `approval.eligible_approver_refs`: HMAC(K_ref, `rig.audit-ref/v1/approver` NUL id) of v3's retained ids, sorted by reference value |
+| — | `engine_ref_key_id`: the K_eref key id (key epoch) |
+
+- **Engine-reference key.** K_eref = HMAC-SHA-256(K_ref, `rig.audit-key-derive/v1` NUL `engine-ref`), key purpose `ENGINE_REF`. It can't be built from raw bytes and can't be used for P1 identity references or MACs. Derivation gives purpose and domain separation, **not** independent compromise: whoever holds K_ref can derive K_eref.
+- **Approvers.** v3 keeps the first `min(count, 32)` approver ids in sorted raw order. The projection keys exactly those ids (it never sees the others), sorts the references, and keeps the total count (0 to 100, M1's limit). `count > len(refs)` shows truncation.
+- **Request references** follow the v3 rule: required for `consistent`, forbidden for `not_applicable`, and present for `mismatch` and `invalid_request` only when the source had a request digest.
+- **Unlinked profile.** Only by explicit `ProjectionProfile.UNLINKED`, and only for sources whose redaction mode is exactly `no-ref-key`. All engine and approver references are `null` and only the approver count is kept. Such a projection can never be tied to an M1 record.
+- **Envelope.** The projection is sealed in `rig.audit-envelope/v2` with its own domains: digest SHA-256(`rig.audit-projection/v1` NUL canonical) and MAC HMAC-SHA-256(K_auth, `rig.audit-projection-mac/v1` NUL key_id NUL canonical). The MAC is mandatory. Verification needs only K_auth and accepts only an exact `dict` keyring.
+
+### Persistence gate (`check_projection_persistable`)
+
+`check_projection_persistable(envelope, keys, *, readable_labels=None, expected_epoch=None) -> ProjectionGateResult`
+is pure: it performs no I/O, never modifies the envelope and never raises for content
+(`BaseException` propagates). It accepts only if all of the following hold, in this order:
+
+1. `keys` is an exact `dict` mapping each K_auth key id to its AUTH key (`keyring_invalid`); `readable_labels` and `expected_epoch` are valid (`configuration_invalid`).
+2. The envelope is exactly a `ProjectionEnvelope`. v1 envelopes are refused by event version (`v3_event_not_persistable`, `v2_event_not_persistable`); anything else (dicts, mappings, look-alikes, subclasses) is `not_a_projection`.
+3. Its canonical bytes re-parse under the closed envelope v2 and projection v1 schemas to identical bytes (`schema_invalid`).
+4. A deep scan of the parsed bytes finds no forbidden key at any depth (`request_digest`, `decision_ref`, `decision_digest`, `request_binding_sha256`, `eligible_approvers`, `event_digest`, `source_ref`, `agent_id`, `tool_id`, `manifest_sha256`, `labels`, `redacted_fields`) and no 64-hex string outside `projection.engine.policy_sha256`, `projection_digest` and `auth.mac` (`forbidden_field`). This also refuses a 64-hex value placed in a readable identifier such as a rule id or `policy_id`.
+5. Digest and MAC verify under K_auth (`digest_mismatch`, `unknown_key`, `authentication_failed`).
+6. When `expected_epoch` is given (`ProjectionEpoch.keyed(K_ref)` or `ProjectionEpoch.unlinked()`), the projection's profile, `ref_key_id` and `engine_ref_key_id` equal it (`epoch_mismatch`).
+7. Readable labels are within the allowlist (`label_not_allowed`).
+
+On success, the result carries a `ValidatedProjection`: the exact canonical bytes that were
+checked, plus the projection digest, K_auth key id, event id, profile and epoch key ids. Only the
+gate can issue one. A passed gate writes nothing and does **not** authorize writing through any
+sink that doesn't apply the gate itself. The result carries codes, never event values.
+
+### Fidelity verification (`verify_projection_fidelity`)
+
+`verify_projection_fidelity(envelope, record, keys) -> FidelityResult` returns exactly `MATCH`,
+`MISMATCH` or `NOT_VERIFIABLE`. **Integrity** (the MAC under K_auth) and **fidelity**
+(agreement with an original M1 `DecisionRecord`) are separate questions: integrity is a
+precondition, never the result.
+
+| Result | When |
+|---|---|
+| `NOT_VERIFIABLE` | The projection isn't an exact, authentic `ProjectionEnvelope` under `keys.auth`; it is `unlinked`; `keys` lacks K_ref or K_auth; K_ref isn't the projection's epoch (`ref_key_id`); or the record is missing, not an exact `DecisionRecord`, not self-consistent, or not one the audit builder accepts |
+| `MISMATCH` | Authentic and verifiable, but some engine field, keyed reference, the K_eref epoch, the approver references or count, or the approval binding differs from what the record yields |
+| `MATCH` | Every engine-section value matches the record |
+
+The record is read once into a detached, digest-checked snapshot, exactly as the builder does.
+Approvers are compared by sorting the raw ids, taking the first `min(count, 32)`, keying each
+with K_ref, sorting the references, and comparing them and the count. `MATCH` means only "this
+projection is consistent with this self-consistent record under this K_ref epoch". It does
+**not** prove that `PolicyEngine` produced the record (the record's digest is unkeyed), that a
+tool ran or was blocked, or anything about the caller section, which isn't compared. Because it
+needs K_ref, the function is itself a guess-confirmation tool for whoever calls it.
+
+### Exception behaviour
+
+- Projection parsers raise value-free `AuditError` objects with no chained context.
+- `project`, the gate and fidelity verification contain `Exception` subclasses raised by hostile in-memory objects: the projector converts them to a closed `AuditError` raised outside the handler, the gate returns a refusal code, and fidelity returns `NOT_VERIFIABLE`.
+- `BaseException` subclasses that are not `Exception` (`KeyboardInterrupt`, `SystemExit`, `GeneratorExit`, custom ones) are never caught, converted or reconstructed; they propagate unchanged.
+- Traceback frames of these calls hold the inputs the caller supplied. Don't ship exceptions with frame locals to external systems.
+- The M2-B v2/v3 parsers are unchanged. Their enum errors keep the original `ValueError`, which quotes the offending input value, in `__context__` (hidden from default tracebacks). A separate M2-B patch has been proposed.
+
+### What projections do not provide
+
+- **Not anonymity.** References are stable within a K_ref epoch. Identical requests share `request_ref`, identical approvers share references, and any K_ref holder can confirm guesses.
+- **Readable quasi-identifiers remain:** timestamps, decision, reason code, rule ids, policy id and version, `policy_sha256` (which can tell known policies apart), counts and approved labels.
+- **Forged but well-formed content.** Any K_auth holder can seal a well-formed projection with false references or counts. Only fidelity verification against an original record (with K_ref) can detect that.
+- **K_ref compromise** exposes every reference of that epoch to guess confirmation. Persisted records can't be re-keyed in place.
+- **64-hex identifier limitation.** The gate refuses any 64-character hexadecimal string outside `policy_sha256`, the projection digest and the MAC, including inside readable identifiers such as rule ids and `policy_id`, because such a value could be a smuggled unkeyed digest. A policy whose rule or policy id is a 64-character hex string therefore can't be persisted (fail closed, a possible false positive). Give such identifiers non-hex names.
+- **Fidelity `MATCH` covers the engine section only.** It doesn't compare the caller section (which would need the original request), and it doesn't prove `PolicyEngine` provenance.
+- **No persistence implemented yet.** The gate and `ValidatedProjection` are pure; nothing writes them anywhere. A persistent sink, ordering chain, checkpoints and key management are M2-C.
+- **No runtime enforcement.** Projections record decisions only (`enforced` is always `false`); nothing blocks, delays or approves a tool call (Genesis D).
 
 ## HMAC design and limitations
 
@@ -344,7 +455,7 @@ The M1 API is unchanged in M2-B.
 ## Remaining work
 
 **M2-C:**
-- JSONL persistence, which must apply `check_persistable` before writing;
+- JSONL persistence that accepts only `ProjectionEnvelope` objects, applies `check_projection_persistable` before writing, and writes `ValidatedProjection.canonical` unchanged;
 - the ordering chain (`seq`, `prev_event_digest`, segment headers);
 - external checkpoints;
 - an on-disk verifier;
