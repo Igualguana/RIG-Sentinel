@@ -41,6 +41,8 @@ def test_expected_audit_modules_exist():
     assert names == {
         "__init__.py", "builder.py", "chain.py", "errors.py", "events.py", "keys.py",
         "projection.py", "redaction.py", "sinks.py", "validation.py",
+        # B2-M2-C1 (F11): pure chain modules; the I/O and call restrictions below apply unchanged.
+        "bounded_json.py", "chainverify.py", "records.py", "storage_errors.py",
     }
 
 
