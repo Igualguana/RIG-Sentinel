@@ -7,6 +7,11 @@ Two independent 256-bit keys with separate purposes:
 * ``K_auth`` (:attr:`KeyPurpose.AUTH`) authenticates audit envelopes with
   HMAC-SHA-256.
 
+B2-M2-C1 adds a third independent purpose, :attr:`KeyPurpose.CHAIN` (``K_chain``), for
+the persistent chain's record, anchor and checkpoint MACs. It is random key material
+loaded with :meth:`AuditKey.from_bytes`, never derived from ``K_auth`` or ``K_ref``;
+:class:`AuditKeys` and :func:`keyring` still accept only REF and AUTH keys.
+
 A key can only be used for its own purpose. Key material is never part of
 ``repr()``, ``str()``, errors, events or receipts, and keys refuse to be
 pickled. Python cannot make memory private: code running in the same process
@@ -31,10 +36,18 @@ _KEY_DERIVE_DOMAIN = b"rig.audit-key-derive/v1"
 _DERIVED = object()  # private capability: only derive_engine_ref_key() may build ENGINE_REF keys
 
 
+def _key_id_for(purpose: KeyPurpose, material: bytes) -> str:
+    """SHA-256(``rig.audit-key-id/v1`` NUL purpose NUL material)[:32 hex] (unchanged since M2-B)."""
+    return hashlib.sha256(
+        _KEY_ID_DOMAIN + _SEPARATOR + purpose.value.encode("ascii") + _SEPARATOR + material
+    ).hexdigest()[:32]
+
+
 class KeyPurpose(StrEnum):
     REF = "ref"
     AUTH = "auth"
     ENGINE_REF = "engine-ref"  # B2-P2: derived from K_ref; keys engine references only
+    CHAIN = "chain"  # B2-M2-C1: independent K_chain (never derived); chain, anchor and checkpoint MACs
 
 
 class AuditKey:
@@ -51,13 +64,7 @@ class AuditKey:
             raise AuditError(AuditErrorCode.KEY_INVALID, "material")
         if material == bytes(KEY_BYTES):
             raise AuditError(AuditErrorCode.KEY_INVALID, "material")
-        key_id = hashlib.sha256(
-            _KEY_ID_DOMAIN
-            + _SEPARATOR
-            + purpose.value.encode("ascii")
-            + _SEPARATOR
-            + material
-        ).hexdigest()[:32]
+        key_id = _key_id_for(purpose, material)
         object.__setattr__(self, "_purpose", purpose)
         object.__setattr__(self, "_material", material)
         object.__setattr__(self, "_key_id", key_id)
@@ -88,6 +95,16 @@ class AuditKey:
 
     def _same_material(self, other: AuditKey) -> bool:
         return hmac.compare_digest(self._material, other._material)
+
+    def _material_has_key_id(self, purpose: KeyPurpose, key_id: object) -> bool:
+        """True if this key's material, used for ``purpose``, would have the public ``key_id``.
+
+        Lets C1 detect material shared with a key it doesn't hold (for example K_eref, known
+        only by its id in a ``ProjectionEpoch``) without exposing or copying the material.
+        """
+        if type(key_id) is not str or not key_id.isascii():
+            return False
+        return hmac.compare_digest(_key_id_for(purpose, self._material), key_id)
 
     def __setattr__(self, name: str, value: object) -> None:
         raise AttributeError("AuditKey is immutable")
