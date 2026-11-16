@@ -22,7 +22,11 @@ FORBIDDEN_MODULES = {
     "socket", "ssl", "http", "urllib", "ftplib", "smtplib", "telnetlib", "webbrowser",
     "subprocess", "multiprocessing", "concurrent", "asyncio", "ctypes", "importlib", "runpy",
     "logging", "sys",
+    # B2-M2-C2-B: platform I/O modules are forbidden too, except where allowlisted below.
+    "fcntl", "msvcrt", "nt", "posix", "_winapi", "winreg",
 }
+# F11 (amended by D-C2-3/D-C2-4): the only audit module that may touch the filesystem.
+IO_ALLOWED = {"safepath.py": frozenset({"os", "fcntl"})}
 FORBIDDEN_CALLS = {"open", "eval", "exec", "compile", "__import__", "input", "breakpoint", "print"}
 THREADING_ALLOWED = {"sinks.py"}
 
@@ -43,6 +47,8 @@ def test_expected_audit_modules_exist():
         "projection.py", "redaction.py", "sinks.py", "validation.py",
         # B2-M2-C1 (F11): pure chain modules; the I/O and call restrictions below apply unchanged.
         "bounded_json.py", "chainverify.py", "records.py", "storage_errors.py",
+        # B2-M2-C2-B: key files; safepath.py is the single filesystem module.
+        "keyfile.py", "safepath.py",
     }
 
 
@@ -56,7 +62,8 @@ def test_audit_modules_import_no_io_or_network_modules():
     for path in AUDIT_FILES:
         for module in _imports(ast.parse(path.read_text(encoding="utf-8"))):
             root = module.split(".")[0]
-            assert root not in FORBIDDEN_MODULES, f"{path.name} imports {module}"
+            allowed = IO_ALLOWED.get(path.name, frozenset())
+            assert root not in FORBIDDEN_MODULES or root in allowed, f"{path.name} imports {module}"
             if root == "threading":
                 assert path.name in THREADING_ALLOWED, path.name
             if root == "rig_sentinel":
@@ -95,3 +102,12 @@ def test_build_seal_append_and_verify_perform_no_file_or_network_io(monkeypatch)
     receipt = sink.append(envelope)
     assert receipt.stored
     assert sink.envelopes()[0].verify(keyring([auth_key()])).value == "authentic"
+
+
+def test_only_safepath_imports_filesystem_modules():
+    importers = set()
+    for path in AUDIT_FILES:
+        for module in _imports(ast.parse(path.read_text(encoding="utf-8"))):
+            if module.split(".")[0] in {"os", "fcntl", "msvcrt", "nt", "posix", "_winapi", "winreg"}:
+                importers.add(path.name)
+    assert importers == {"safepath.py"}
