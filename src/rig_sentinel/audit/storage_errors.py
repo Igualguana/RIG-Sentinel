@@ -61,6 +61,18 @@ class StorageErrorCode(StrEnum):
     ANCHOR_REINITIALIZED = "anchor_reinitialized"
     TOO_MANY_ISSUES = "too_many_issues"
     RECORD_BUDGET_EXCEEDED = "record_budget_exceeded"  # H1-02: more lines than max_records
+    # Filesystem and key files (B2-M2-C2-B)
+    UNSAFE_PATH = "unsafe_path"
+    UNSAFE_PERMISSIONS = "unsafe_permissions"
+    ATTESTATION_REQUIRED = "attestation_required"
+    UNSUPPORTED_PLATFORM = "unsupported_platform"
+    UNSUPPORTED_FILESYSTEM = "unsupported_filesystem"
+    KEY_FILE_MISSING = "key_file_missing"
+    KEY_FILE_UNSAFE = "key_file_unsafe"
+    KEY_FILE_FORMAT = "key_file_format"
+    KEY_FILE_EXISTS = "key_file_exists"
+    KEY_ID_MISMATCH = "key_id_mismatch"
+    STORAGE_UNAVAILABLE = "storage_unavailable"
     # Internal invariants (splice proof)
     INTERNAL_INVARIANT = "internal_invariant"
 
