@@ -90,17 +90,31 @@ def test_subclass_of_builtin_with_the_same_name_is_unlisted(base):
 _PACKAGE_DIR = os.path.normcase(os.path.dirname(os.path.dirname(engine_module.__file__)))
 _NAME_AND_COMPARISON_HOOKS = {"__name__", "__module__", "__eq__", "__hash__"}
 
+# CPython 3.11 only: when an exception unwinds into a frame with a handler, ceval's
+# exception_unwind calls _PyErr_NormalizeException, which runs
+# PyObject_IsSubclass(type(value), type). For `raise HostileError()` both arguments are the
+# raised class itself, so the interpreter calls HostileMeta.__subclasscheck__(cls, cls) with
+# the handling (engine) frame on top. The engine does not make this call and cannot avoid it.
+# CPython 3.12+ stores exceptions normalized and no longer does this. Only that exact
+# reflexive self-check is set aside, and only on 3.11; any other hook call still fails.
+_PY311_UNWIND_NORMALIZES = sys.version_info < (3, 12)
+
 
 class _AccessLog:
     """Records which metaclass hooks ran, and whether rig_sentinel code triggered them."""
 
     def __init__(self):
         self.events = []
+        self.interpreter_normalizations = 0  # CPython 3.11 reflexive checks set aside (see above)
 
-    def note(self, hook):
+    def note(self, hook, *, reflexive_subclass_check=False):
         caller = sys._getframe(2)  # 0 = note, 1 = the hook, 2 = the code that triggered it
         path = os.path.normcase(os.path.abspath(caller.f_code.co_filename))
-        self.events.append((hook, path.startswith(_PACKAGE_DIR)))
+        from_package = path.startswith(_PACKAGE_DIR)
+        if from_package and reflexive_subclass_check and _PY311_UNWIND_NORMALIZES:
+            self.interpreter_normalizations += 1
+            return
+        self.events.append((hook, from_package))
 
     def assert_engine_never_consulted_the_class(self):
         # CPython's own `raise` statement may call __subclasscheck__ in the raising
@@ -134,7 +148,7 @@ def _metaclass_that_records(log, *, name_behavior):
             return True
 
         def __subclasscheck__(cls, subclass):
-            log.note("__subclasscheck__")
+            log.note("__subclasscheck__", reflexive_subclass_check=subclass is cls)
             return True
 
     return HostileMeta

@@ -2,14 +2,16 @@
 
 Usage: python scripts/ci/remove_ntfs_test_dir.py
 
-Only the directory named by RIG_SENTINEL_NTFS_TEST_DIR is removed, and only when it is a direct child of
-RUNNER_TEMP named rig-ntfs-*. Reparse points (junctions, symlinks) are removed as links; their targets
-are never entered. Standard library only.
+Only the directory named by RIG_SENTINEL_NTFS_TEST_DIR is removed, and only when it is a canonical direct
+child, named rig-ntfs-*, of RIG_NTFS_BASE, which must itself be the canonical system temporary directory
+(both are exported by prepare_ntfs_test_dir.py). Reparse points (junctions, symlinks) are removed as
+links; their targets are never entered. Standard library only.
 """
 
 import os
 import stat
 import sys
+import tempfile
 
 REPARSE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
@@ -40,13 +42,16 @@ def remove_entry(path):
 
 def main():
     target = os.environ.get("RIG_SENTINEL_NTFS_TEST_DIR", "")
-    runner_temp = os.environ.get("RUNNER_TEMP", "")
-    if not target or not runner_temp:
-        print("nothing to remove: RIG_SENTINEL_NTFS_TEST_DIR or RUNNER_TEMP is not set")
+    base = os.environ.get("RIG_NTFS_BASE", "")
+    if not target or not base:
+        print("nothing to remove: RIG_SENTINEL_NTFS_TEST_DIR or RIG_NTFS_BASE is not set")
         return 0
-    if (os.path.dirname(target) != runner_temp or not os.path.basename(target).startswith("rig-ntfs-")
+    if base != os.path.realpath(tempfile.gettempdir()):
+        print("REFUSED: RIG_NTFS_BASE is not the canonical system temporary directory")
+        return 1
+    if (os.path.dirname(target) != base or not os.path.basename(target).startswith("rig-ntfs-")
             or os.path.realpath(target) != target):
-        print("REFUSED: " + target + " is not a canonical rig-ntfs-* directory directly under RUNNER_TEMP")
+        print("REFUSED: " + target + " is not a canonical rig-ntfs-* directory directly under " + base)
         return 1
     if not os.path.lexists(target):
         print("already removed: " + target)

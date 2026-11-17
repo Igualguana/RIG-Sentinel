@@ -30,10 +30,15 @@ NTFS = [
     "test_ntfs_two_flip_read_race_is_detected_as_unsafe_path",
     "test_ntfs_four_flip_read_race_is_stopped_only_by_the_pin",
     "test_ntfs_create_race_path_is_unreachable",
+    # Windows short-name tests outside the NTFS directory (system temp volume, ctypes lookup on 3.11+)
+    "test_short_path_query_reports_failure_instead_of_skipping",
+    "test_short_name_alias_is_refused",
 ]
 POSIX = [
     "test_posix_create_and_load_with_pin",
     "test_posix_symlinks_are_refused",
+    "test_posix_walk_refuses_a_symlink_swapped_in_after_the_canonical_check",
+    "test_posix_created_key_mode_is_exact_under_restrictive_umask",
     "test_posix_unsafe_key_modes_are_refused[416]",
     "test_posix_unsafe_key_modes_are_refused[388]",
     "test_posix_unsafe_key_modes_are_refused[432]",
@@ -43,7 +48,7 @@ POSIX = [
     "test_posix_non_canonical_path_is_refused",
 ]
 LINUX = ["test_posix_world_writable_ancestor_is_refused"]
-PROFILES = {"windows-ntfs": NTFS, "linux": POSIX + LINUX, "macos": POSIX}
+PROFILES = {"windows-ntfs": NTFS, "linux": POSIX + LINUX, "macos": POSIX}  # 17, 12, 11 required tests
 
 
 def outcomes(path):

@@ -371,13 +371,42 @@ def test_fat32_is_refused_before_anything_is_written(tmp_path):
     assert os.listdir(path) == []
 
 
+_MAX_WIDE_PATH = 32768  # Windows extended-length path limit in UTF-16 units, including the terminator
+
+
+def _short_path_name(path):
+    """Read-only GetShortPathNameW query (works on Python 3.11+; _winapi only has it from 3.12).
+
+    Returns the path unchanged when the volume generates no 8.3 alias; raises OSError on API failure.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # private instance: no global argtypes
+    query = kernel32.GetShortPathNameW
+    query.argtypes = (wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD)
+    query.restype = wintypes.DWORD
+    buffer = ctypes.create_unicode_buffer(_MAX_WIDE_PATH)
+    length = query(str(path), buffer, _MAX_WIDE_PATH)
+    if length == 0:
+        raise ctypes.WinError(ctypes.get_last_error())
+    if length >= _MAX_WIDE_PATH:
+        raise OSError(errno.ENAMETOOLONG, "GetShortPathNameW result exceeds the bounded buffer", str(path))
+    return buffer.value
+
+
+@windows_only
+def test_short_path_query_reports_failure_instead_of_skipping(tmp_path):
+    # An API failure must surface as an error, never as "no alias" (which would turn into a skip).
+    with pytest.raises(OSError):
+        _short_path_name(tmp_path / "does-not-exist")
+
+
 @windows_only
 def test_short_name_alias_is_refused(tmp_path):
-    import _winapi
-
     long_dir = tmp_path / "averylongdirectoryname_for_alias"
     long_dir.mkdir()
-    short = _winapi.GetShortPathName(str(long_dir)) if hasattr(_winapi, "GetShortPathName") else str(long_dir)
+    short = _short_path_name(long_dir)
     if short == str(long_dir):
         pytest.skip("no 8.3 alias generated on this volume")
     assert code_of(SafeDirectory.open, short, role="keys", windows_attestation=ATTESTED) is StorageErrorCode.UNSAFE_PATH
@@ -861,11 +890,9 @@ def test_ntfs_open_key_file_cannot_be_replaced(ntfs_dir):
 
 @ntfs_only
 def test_ntfs_short_name_alias_is_refused(ntfs_dir):
-    import _winapi
-
     long_dir = os.path.join(ntfs_dir, "averylongdirectoryname_for_alias")
     os.mkdir(long_dir)
-    short = _winapi.GetShortPathName(long_dir) if hasattr(_winapi, "GetShortPathName") else long_dir
+    short = _short_path_name(long_dir)
     if short == long_dir:
         pytest.skip("8.3 short names are not generated on this NTFS volume")
     assert code_of(SafeDirectory.open, short, role="keys", windows_attestation=ATTESTED) is StorageErrorCode.UNSAFE_PATH
@@ -1049,12 +1076,45 @@ def test_posix_symlinks_are_refused(posix_dir):
     os.mkdir(real, 0o700)
     link_dir = os.path.join(posix_dir, "linkdir")
     os.symlink(real, link_dir)
-    assert code_of(SafeDirectory.open, link_dir, role="keys") is StorageErrorCode.UNSAFE_PATH
+    # The canonical-path rule refuses the symlinked directory before any descriptor walk.
+    with pytest.raises(StorageError) as info:
+        SafeDirectory.open(link_dir, role="keys")
+    assert info.value.__context__ is None and info.value.__cause__ is None
+    assert (info.value.code, info.value.path) == (StorageErrorCode.UNSAFE_PATH, "path:not-canonical")
     with SafeDirectory.open(real, role="keys") as directory:
         pinned = kf.create_key_file(directory, "chain.key", KeyPurpose.CHAIN)
         os.symlink(os.path.join(real, "chain.key"), os.path.join(real, "alias.key"))
         assert code_of(kf.load_key_file, directory, "alias.key", KeyPurpose.CHAIN, expected_key_id=pinned) is (
             StorageErrorCode.UNSAFE_PATH)
+
+
+@posix_only
+def test_posix_walk_refuses_a_symlink_swapped_in_after_the_canonical_check(posix_dir, monkeypatch):
+    # Simulates a symlink that appears after the realpath() check (TOCTOU): only that one check is
+    # neutralised, inside this test, so O_NOFOLLOW in the descriptor walk is the control under test.
+    real = os.path.join(posix_dir, "real")
+    os.mkdir(real, 0o700)
+    link_dir = os.path.join(posix_dir, "linkdir")
+    os.symlink(real, link_dir)
+    monkeypatch.setattr(sp.os.path, "realpath", lambda path, *args, **kwargs: path)
+    with pytest.raises(StorageError) as info:
+        SafeDirectory.open(link_dir, role="keys")
+    monkeypatch.undo()
+    assert info.value.__context__ is None and info.value.__cause__ is None
+    assert (info.value.code, info.value.path) == (StorageErrorCode.UNSAFE_PATH, "directory:open")
+
+
+@posix_only
+def test_posix_created_key_mode_is_exact_under_restrictive_umask(posix_dir):
+    # umask 0o277 would leave 0o400; the explicit fchmod(0o600) must still produce exactly 0o600.
+    old = os.umask(0o277)
+    try:
+        with SafeDirectory.open(posix_dir, role="keys") as directory:
+            pinned = kf.create_key_file(directory, "chain.key", KeyPurpose.CHAIN)
+            assert stat.S_IMODE(os.stat(os.path.join(posix_dir, "chain.key")).st_mode) == 0o600
+            assert kf.load_key_file(directory, "chain.key", KeyPurpose.CHAIN, expected_key_id=pinned).key_id == pinned
+    finally:
+        os.umask(old)
 
 
 @posix_only

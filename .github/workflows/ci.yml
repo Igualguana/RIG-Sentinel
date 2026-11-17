@@ -69,34 +69,42 @@ jobs:
         run: |
           python -m pytest -q --junitxml=pytest-junit.xml
 
+      # Diagnostic steps run even after a failed step (but not after cancellation); any failure
+      # still fails the job.
       - name: Require native POSIX key-file coverage
+        if: ${{ !cancelled() }}
         shell: bash
         run: |
           python scripts/ci/assert_platform_coverage.py --junit pytest-junit.xml --profile ${{ runner.os == 'Linux' && 'linux' || 'macos' }}
 
       - name: Validate CLI
+        if: ${{ !cancelled() }}
         shell: bash
         run: |
           rig-sentinel --help
 
       - name: Generate HTML security report
+        if: ${{ !cancelled() }}
         shell: bash
         run: |
           rig-sentinel scan . --html rig-sentinel.html
           test -s rig-sentinel.html
 
       - name: Generate SARIF security report
+        if: ${{ !cancelled() }}
         shell: bash
         run: |
           rig-sentinel scan . --sarif rig-sentinel.sarif
           test -s rig-sentinel.sarif
 
       - name: Validate SARIF 2.1.0
+        if: ${{ !cancelled() }}
         shell: bash
         run: |
           python -c "import json; from pathlib import Path; p=json.loads(Path('rig-sentinel.sarif').read_text(encoding='utf-8')); assert p['version']=='2.1.0'; assert len(p['runs'])>=1; print('SARIF valid')"
 
       - name: Upload HTML and SARIF reports
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v6
         with:
           name: rig-sentinel-reports-${{ matrix.os }}-py${{ matrix.python }}
@@ -104,7 +112,7 @@ jobs:
             rig-sentinel.html
             rig-sentinel.sarif
             pytest-junit.xml
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
 
   windows-ntfs:
@@ -143,47 +151,46 @@ jobs:
         run: |
           python -m pip install -e ".[dev]"
 
-      - name: Create an isolated native NTFS test directory
+      - name: Create a verified native NTFS test directory (system temp volume, 8.3 required)
         shell: pwsh
         run: |
-          $dir = Join-Path $env:RUNNER_TEMP "rig-ntfs-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-py${{ matrix.python }}"
-          if (Test-Path -LiteralPath $dir) { throw "NTFS test directory already exists: $dir" }
-          $fs = (Get-Volume -DriveLetter $dir.Substring(0, 1)).FileSystemType
-          if ($fs -ne "NTFS") { throw "RUNNER_TEMP is on $fs, not NTFS: native NTFS tests cannot run" }
-          New-Item -ItemType Directory -Path $dir | Out-Null
-          python -c "import os, sys; d = sys.argv[1]; sys.exit(0 if os.path.realpath(d) == d else 'NTFS test directory is not canonical: ' + d)" $dir
-          if ($LASTEXITCODE -ne 0) { throw "NTFS test directory is not canonical" }
-          "RIG_SENTINEL_NTFS_TEST_DIR=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Output "native NTFS test directory: $dir"
+          python scripts/ci/prepare_ntfs_test_dir.py --label py${{ matrix.python }}
 
       - name: Run all automated tests with native NTFS enabled
         shell: pwsh
         run: |
           python -m pytest -q --junitxml=pytest-junit.xml
 
+      # Diagnostic steps run even after a failed step (but not after cancellation); any failure
+      # still fails the job.
       - name: Require native NTFS key-file coverage
+        if: ${{ !cancelled() }}
         shell: pwsh
         run: |
           python scripts/ci/assert_platform_coverage.py --junit pytest-junit.xml --profile windows-ntfs
 
       - name: Validate CLI
+        if: ${{ !cancelled() }}
         shell: bash
         run: |
           rig-sentinel --help
 
       - name: Generate HTML security report
+        if: ${{ !cancelled() }}
         shell: bash
         run: |
           rig-sentinel scan . --html rig-sentinel.html
           test -s rig-sentinel.html
 
       - name: Generate SARIF security report
+        if: ${{ !cancelled() }}
         shell: bash
         run: |
           rig-sentinel scan . --sarif rig-sentinel.sarif
           test -s rig-sentinel.sarif
 
       - name: Validate SARIF 2.1.0
+        if: ${{ !cancelled() }}
         shell: bash
         run: |
           python -c "import json; from pathlib import Path; p=json.loads(Path('rig-sentinel.sarif').read_text(encoding='utf-8')); assert p['version']=='2.1.0'; assert len(p['runs'])>=1; print('SARIF valid')"
@@ -195,7 +202,7 @@ jobs:
           python scripts/ci/remove_ntfs_test_dir.py
 
       - name: Upload HTML and SARIF reports
-        if: always()
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v6
         with:
           name: rig-sentinel-reports-windows-2025-py${{ matrix.python }}
@@ -238,16 +245,11 @@ jobs:
         run: |
           python -m pip install ".[dev]"
 
-      - name: Create an isolated native NTFS test directory
+      - name: Create a verified native NTFS test directory (system temp volume, 8.3 required)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $dir = Join-Path $env:RUNNER_TEMP "rig-ntfs-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-mutants"
-          if (Test-Path -LiteralPath $dir) { throw "NTFS test directory already exists: $dir" }
-          $fs = (Get-Volume -DriveLetter $dir.Substring(0, 1)).FileSystemType
-          if ($fs -ne "NTFS") { throw "RUNNER_TEMP is on $fs, not NTFS: NTFS mutants cannot run" }
-          New-Item -ItemType Directory -Path $dir | Out-Null
-          "RIG_SENTINEL_NTFS_TEST_DIR=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          python scripts/ci/prepare_ntfs_test_dir.py --label mutants
 
       - name: Run the platform mutants (every mutant must be caught)
         shell: bash
