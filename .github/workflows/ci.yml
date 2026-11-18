@@ -261,3 +261,73 @@ jobs:
         shell: pwsh
         run: |
           python scripts/ci/remove_ntfs_test_dir.py
+
+  # B2-M2-C2-C: audit-storage mutants. Each host runs only the profiles it can support; every profile
+  # must catch all of its mutants, and an unsupported environment (exit 2) also fails the job.
+  c2c-platform-mutants:
+    name: C2-C ${{ matrix.profiles }} mutants / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            profiles: portable posix linux
+          - os: macos-15-intel
+            profiles: posix
+          - os: windows-2025
+            profiles: portable ntfs
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install RIG Sentinel (non-editable) and development dependencies
+        shell: bash
+        run: |
+          python -m pip install ".[dev]"
+
+      - name: Create a verified native NTFS test directory (system temp volume, 8.3 required)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python scripts/ci/prepare_ntfs_test_dir.py --label c2c-mutants
+
+      - name: Run the C2-C portable mutants (every mutant must be caught)
+        if: contains(matrix.profiles, 'portable')
+        shell: bash
+        run: |
+          python scripts/ci/c2c_platform_mutants.py --profile portable
+
+      - name: Run the C2-C POSIX mutants (every mutant must be caught)
+        if: contains(matrix.profiles, 'posix')
+        shell: bash
+        run: |
+          python scripts/ci/c2c_platform_mutants.py --profile posix
+
+      - name: Run the C2-C Linux mutants (every mutant must be caught)
+        if: contains(matrix.profiles, 'linux')
+        shell: bash
+        run: |
+          python scripts/ci/c2c_platform_mutants.py --profile linux
+
+      - name: Run the C2-C NTFS mutants (every mutant must be caught)
+        if: contains(matrix.profiles, 'ntfs')
+        shell: bash
+        run: |
+          python scripts/ci/c2c_platform_mutants.py --profile ntfs
+
+      - name: Remove the NTFS test directory without following links
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python scripts/ci/remove_ntfs_test_dir.py

@@ -48,13 +48,77 @@ POSIX = [
     "test_posix_non_canonical_path_is_refused",
 ]
 LINUX = ["test_posix_world_writable_ancestor_is_refused"]
-PROFILES = {"windows-ntfs": NTFS, "linux": POSIX + LINUX, "macos": POSIX}  # 17, 12, 11 required tests
+
+# B2-M2-C2-C: audit-storage primitives (tests/test_audit_c2c_safefs.py). Mocked tests are never listed.
+C2C_MODULE = "tests.test_audit_c2c_safefs"
+C2C_NTFS = [
+    "test_ntfs_audit_storage_is_read_only_and_writes_touch_nothing",
+    "test_ntfs_junction_chain_directory_and_hard_linked_member_are_refused",
+    "test_ntfs_open_member_cannot_be_replaced_and_growth_is_detected",
+]
+C2C_POSIX = [
+    "test_posix_anchor_replacement",
+    "test_posix_anchor_swapped_right_after_replace_is_detected",
+    "test_posix_append_limit_does_not_seal",
+    "test_posix_chain_directory_is_created_private_under_restrictive_umask",
+    "test_posix_chain_directory_swapped_right_after_open_is_detected",
+    "test_posix_cleanup_race_is_detected_not_prevented",
+    "test_posix_directory_sync_failure_after_replace_is_uncertain_not_rolled_back",
+    "test_posix_existing_unsafe_chain_directory_is_refused_and_never_chmodded",
+    "test_posix_failed_creation_cleans_up_only_its_own_file",
+    "test_posix_filesystem_refusal_is_enforced_when_opening",
+    "test_posix_foreign_append_and_truncation_are_detected",
+    "test_posix_hard_link_after_open_seals_the_segment",
+    "test_posix_held_chain_directory_survives_replacement",
+    "test_posix_key_directories_ignore_the_audit_filesystem_policy",
+    "test_posix_listing_is_bounded_and_never_names_unknown_entries",
+    "test_posix_member_swapped_right_after_open_is_detected",
+    "test_posix_planted_temp_is_never_reused_or_deleted[directory]",
+    "test_posix_planted_temp_is_never_reused_or_deleted[fifo]",
+    "test_posix_planted_temp_is_never_reused_or_deleted[file]",
+    "test_posix_planted_temp_is_never_reused_or_deleted[symlink]",
+    "test_posix_quarantine_crash_between_link_and_unlink_fails_closed",
+    "test_posix_quarantine_never_clobbers",
+    "test_posix_read_detects_growth_and_change",
+    "test_posix_remove_created_never_deletes_a_substituted_file[file]",
+    "test_posix_remove_created_never_deletes_a_substituted_file[symlink]",
+    "test_posix_remove_created_refuses_links_moves_and_other_directories",
+    "test_posix_remove_created_removes_only_its_own_file",
+    "test_posix_remove_created_reports_already_gone",
+    "test_posix_renamed_or_replaced_segment_is_detected",
+    "test_posix_segment_create_append_sync_and_read",
+    "test_posix_short_write_seals_the_handle",
+    "test_posix_symlink_fifo_and_directory_members_are_refused",
+    "test_posix_symlinked_audit_root_and_chain_directory_are_refused",
+    "test_posix_sync_failure_seals_and_reports_durability_failed",
+    "test_posix_temp_swapped_before_replace_is_detected_and_not_deleted",
+    "test_posix_temp_sync_or_replace_failure_leaves_anchor_unchanged",
+    "test_posix_unsafe_anchor_target_is_never_replaced[directory]",
+    "test_posix_unsafe_anchor_target_is_never_replaced[hardlink]",
+    "test_posix_unsafe_anchor_target_is_never_replaced[symlink]",
+    "test_posix_unsafe_member_permissions_and_missing_files",
+]
+C2C_LINUX = [
+    "test_linux_descriptors_are_never_leaked",
+    "test_linux_real_mountinfo_parses_and_the_audit_root_is_accepted",
+]
+
+
+def _qualify(module, names):
+    return [module + "::" + name for name in names]
+
+
+PROFILES = {  # C2-B lists unchanged (17, 12, 11); C2-C adds 3, 42, 40
+    "windows-ntfs": _qualify(MODULE, NTFS) + _qualify(C2C_MODULE, C2C_NTFS),
+    "linux": _qualify(MODULE, POSIX + LINUX) + _qualify(C2C_MODULE, C2C_POSIX + C2C_LINUX),
+    "macos": _qualify(MODULE, POSIX) + _qualify(C2C_MODULE, C2C_POSIX),
+}
 
 
 def outcomes(path):
     results = {}
     for case in ET.parse(path).getroot().iter("testcase"):
-        if case.get("classname") != MODULE:
+        if case.get("classname") not in (MODULE, C2C_MODULE):
             continue
         if case.find("skipped") is not None:
             state = "skipped"
@@ -62,7 +126,7 @@ def outcomes(path):
             state = "failed"
         else:
             state = "passed"
-        results[case.get("name")] = state
+        results[case.get("classname") + "::" + case.get("name")] = state
     return results
 
 

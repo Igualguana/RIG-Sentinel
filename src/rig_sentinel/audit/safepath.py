@@ -34,6 +34,21 @@ Windows (NTFS only, attestation required, D-C2-6):
 
 Errors are :class:`StorageError` codes with fixed labels. They never include paths, file
 contents or ``OSError`` text, and are raised without exception context.
+
+Audit storage (Genesis B2-M2-C2-C), separate classes so key-file and audit operations never mix:
+* :class:`AuditDirectory` (an audit root, opened like a key directory) and :class:`ChainDirectory`
+  (``chain-<32 hex>`` inside it). Member names come from fixed tables; ``*.key`` is never accepted.
+* POSIX only for every write: exclusive segment creation, single-write append with seal on a
+  short write, atomic anchor replacement (``O_EXCL`` temp, sync, identity checks, ``renameat``,
+  directory sync), no-clobber quarantine (``linkat`` + identity-checked ``unlinkat``) and cleanup
+  bound to a retained descriptor (:class:`CreatedToken`). Each write method refuses on Windows before
+  any filesystem call. Windows audit operations are read-only.
+* A failed directory sync after a namespace change raises ``DURABILITY_UNCERTAIN``; it is never
+  reported as durable. Callers (C3/C4) must reconcile persisted state; there is no recovery here.
+* Linux: ``/proc/self/mountinfo`` is parsed with bounds and network, FUSE, FAT-type and memory-backed
+  (tmpfs, ramfs) filesystems are refused (best effort, fail closed). It cannot authenticate physical
+  storage.
+* No protection is claimed against processes with the same credentials, or root.
 """
 
 from __future__ import annotations
@@ -43,6 +58,7 @@ import os
 import re
 import stat
 from dataclasses import dataclass
+from enum import StrEnum
 
 try:  # POSIX only; used solely for F_FULLFSYNC on macOS (D-C2-4)
     import fcntl
@@ -52,14 +68,28 @@ except ImportError:  # Windows
 from rig_sentinel.audit.storage_errors import StorageError, StorageErrorCode
 
 __all__ = [
+    "ANCHOR_NAME",
+    "ANCHOR_TEMP_NAME",
     "MAX_COMPONENTS",
     "MAX_POSIX_PATH_BYTES",
     "MAX_WINDOWS_PATH",
+    "AuditDirectory",
+    "ChainDirectory",
+    "CreatedToken",
+    "Durability",
+    "ListResult",
+    "MountEntry",
+    "SafeAppendFile",
     "SafeDirectory",
+    "SafeReadFile",
     "WindowsAttestation",
+    "check_chain_directory_name",
+    "check_chain_member_name",
     "check_file_name",
     "check_posix_path",
     "check_windows_path",
+    "filesystem_type",
+    "parse_mountinfo",
 ]
 
 MAX_POSIX_PATH_BYTES = 4_096
@@ -452,6 +482,512 @@ def _posix_remove_if_same(dfd: int, name: str, created: _Identity) -> None:
         pass
 
 
+# --- C2-C: audit storage names, limits and shared helpers -----------------------------------------------
+
+ANCHOR_NAME = ".seq_anchor"
+ANCHOR_TEMP_NAME = ".seq_anchor.tmp"
+_WRITER_LOCK_NAME = ".writer.lock"  # reserved for C2-D: listed, never opened by C2-C
+_CHAIN_DIR_RE = re.compile(r"chain-[0-9a-f]{32}")
+_SEGMENT_RE = re.compile(r"seg-(?:0|[1-9][0-9]{0,15})\.jsonl")
+_QUARANTINE_RE = re.compile(r"\.seq_anchor\.q[0-7]")
+MAX_FILE_BYTES = 1 << 40  # upper bound accepted for any caller-supplied max_size
+MAX_REPLACE_BYTES = 1 << 20
+MAX_LIST_ENTRIES = 1_000_000
+
+
+class Durability(StrEnum):
+    """What a successful sync achieved (F5). Never returned when durability is uncertain."""
+
+    FSYNC = "fsync"  # os.fsync returned success
+    FULLFSYNC = "fullfsync"  # macOS: fsync and F_FULLFSYNC both returned success
+
+
+@dataclass(frozen=True)
+class ListResult:
+    """Allowed member names (sorted) and a count of other entries, which are never named."""
+
+    names: tuple[str, ...]
+    other_entries: int
+
+
+def _is_segment(name: str) -> bool:
+    return _SEGMENT_RE.fullmatch(name) is not None
+
+
+def _is_quarantine(name: str) -> bool:
+    return _QUARANTINE_RE.fullmatch(name) is not None
+
+
+def _is_readable_member(name: str) -> bool:
+    return _is_segment(name) or _is_quarantine(name) or name in (ANCHOR_NAME, ANCHOR_TEMP_NAME)
+
+
+def _is_listed_member(name: str) -> bool:
+    return _is_readable_member(name) or name == _WRITER_LOCK_NAME
+
+
+def check_chain_directory_name(name: object) -> str:
+    """``chain-<32 lowercase hex>`` (pure)."""
+    if type(name) is not str or _CHAIN_DIR_RE.fullmatch(name) is None:
+        raise _fail(StorageErrorCode.UNSAFE_PATH, "path:chain-name")
+    return name
+
+
+def check_chain_member_name(name: object, *, kind: str) -> str:
+    """Validate a member name of a chain directory for one operation kind (pure).
+
+    ``segment``: ``seg-<n>.jsonl``; ``readable``: segments, the anchor, its temp and quarantine names;
+    ``quarantine``: ``.seq_anchor.q0`` ... ``.q7``; ``quarantine-source``: the anchor or its temp.
+    """
+    if type(name) is str:
+        if kind == "segment" and _is_segment(name):
+            return name
+        if kind == "readable" and _is_readable_member(name):
+            return name
+        if kind == "quarantine" and _is_quarantine(name):
+            return name
+        if kind == "quarantine-source" and name in (ANCHOR_NAME, ANCHOR_TEMP_NAME):
+            return name
+    raise _fail(StorageErrorCode.UNSAFE_PATH, "path:member-name")
+
+
+def _check_limit(value: object, upper: int, label: str) -> int:
+    if type(value) is not int or not 1 <= value <= upper:
+        raise _fail(StorageErrorCode.INPUT_TYPE_INVALID, label)
+    return value
+
+
+def _fs_code(error: OSError, *, missing: StorageErrorCode) -> StorageErrorCode:
+    """errno mapping for audit-storage files (the key-file mapping above is unchanged)."""
+    number = error.errno
+    if number == errno.ENOENT:
+        return missing
+    if number in (errno.ENOTDIR, errno.ELOOP, getattr(errno, "EMLINK", -1)):
+        return StorageErrorCode.UNSAFE_PATH  # O_NOFOLLOW / O_DIRECTORY refused a link or non-directory
+    if errno.EEXIST == number:
+        return StorageErrorCode.FILE_EXISTS
+    if number in (errno.EISDIR, getattr(errno, "ENXIO", -1)):
+        return StorageErrorCode.FILE_UNSAFE  # a directory, or a FIFO without a reader (O_NONBLOCK)
+    return StorageErrorCode.STORAGE_UNAVAILABLE
+
+
+def _sync_level(fd: int) -> Durability:
+    """fsync, plus F_FULLFSYNC where the platform offers it; report what was achieved."""
+    os.fsync(fd)
+    if fcntl is not None and hasattr(fcntl, "F_FULLFSYNC"):
+        try:
+            fcntl.fcntl(fd, fcntl.F_FULLFSYNC)
+        except OSError:
+            return Durability.FSYNC
+        return Durability.FULLFSYNC
+    return Durability.FSYNC
+
+
+def _weakest(*levels: Durability) -> Durability:
+    return Durability.FULLFSYNC if all(level is Durability.FULLFSYNC for level in levels) else Durability.FSYNC
+
+
+def _posix_write_capable() -> bool:
+    """Descriptor-relative primitives every C2-C POSIX write needs."""
+    if os.name != "posix" or not hasattr(os, "fchmod"):
+        return False
+    needed = (os.open, os.stat, os.mkdir, os.unlink, os.rename, os.link)
+    return (
+        all(function in os.supports_dir_fd for function in needed)
+        and os.link in os.supports_follow_symlinks
+        and os.scandir in os.supports_fd
+    )
+
+
+def _private_file_label(st: os.stat_result, euid: int) -> str | None:
+    """Audit files: regular, one link, owned by the effective user, no group or other bits."""
+    if not stat.S_ISREG(st.st_mode):
+        return "file:type"
+    if st.st_nlink != 1:
+        return "file:links"
+    if st.st_uid != euid or stat.S_IMODE(st.st_mode) & 0o077 != 0:
+        return "file:permissions"
+    return None
+
+
+def _named_identity(dfd: int, name: str) -> os.stat_result:
+    return os.stat(name, dir_fd=dfd, follow_symlinks=False)
+
+
+# --- C2-C: POSIX descriptor-bound primitives (every caller has already refused non-POSIX) ---------------
+
+
+def _posix_unlink_if_ours(dfd: int, name: str, fd: int, identity: _Identity) -> str | None:
+    """Unlink ``name`` only if it is the object behind our open ``fd`` (correction A).
+
+    Returns ``None`` if removed (or already gone), else a fixed label explaining why nothing was
+    deleted, or ``file:cleanup-race`` if the post-check shows another object was removed.
+    """
+    try:
+        held = os.fstat(fd)
+        if _identity(held) != identity:
+            return "token:identity"
+        if held.st_nlink == 0:
+            return None  # our object no longer has a name; nothing to remove
+        try:
+            named = _named_identity(dfd, name)
+        except FileNotFoundError:
+            return "file:moved"  # our object is linked elsewhere: ambiguous, never touched
+        if _identity(named) != identity or not stat.S_ISREG(named.st_mode):
+            return "file:substituted"
+        if named.st_nlink != 1:
+            return "file:links"
+        os.unlink(name, dir_fd=dfd)
+        if os.fstat(fd).st_nlink != 0:
+            return "file:cleanup-race"  # the name removed was not our last link: detected, not prevented
+    except OSError:
+        return "file:cleanup"
+    return None
+
+
+def _posix_open_child(dfd: int, name: str, create: bool) -> int:
+    euid = os.geteuid()  # type: ignore[attr-defined]
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    fd: int | None = None
+    problem: tuple[StorageErrorCode, str] | None = None
+    try:
+        created = False
+        if create:
+            try:
+                os.mkdir(name, 0o700, dir_fd=dfd)
+                created = True
+            except FileExistsError:
+                pass  # an existing child is opened and checked like any other; never chmod-ed (D-C2C-8)
+        fd = os.open(name, flags, dir_fd=dfd)
+        if created:
+            os.fchmod(fd, 0o700)  # umask can only remove bits; set the exact mode on what we created
+        st = os.fstat(fd)
+        code = _posix_directory_problem(st, euid, final=True)
+        if code is not None:
+            problem = (code, "directory:child")
+        elif _identity(_named_identity(dfd, name)) != _identity(st):
+            problem = (StorageErrorCode.UNSAFE_PATH, "directory:changed")
+    except OSError as error:
+        problem = (_fs_code(error, missing=StorageErrorCode.STORAGE_UNAVAILABLE), "directory:child")
+    if problem is not None:
+        _close_quietly(fd)
+        raise _fail(*problem)
+    return fd  # type: ignore[return-value]
+
+
+def _posix_open_member(dfd: int, name: str, flags: int, max_size: int, *, create: bool) -> tuple[int, os.stat_result]:
+    """Open a chain member relative to the held directory and verify it; returns (fd, fstat)."""
+    euid = os.geteuid()  # type: ignore[attr-defined]
+    fd: int | None = None
+    problem: tuple[StorageErrorCode, str] | None = None
+    identity: _Identity | None = None
+    st: os.stat_result | None = None
+    try:
+        if create:
+            fd = os.open(name, flags, 0o600, dir_fd=dfd)
+            identity = _identity(os.fstat(fd))  # recorded first, so any later failure can clean up
+            os.fchmod(fd, 0o600)
+        else:
+            fd = os.open(name, flags, dir_fd=dfd)
+        st = os.fstat(fd)
+        label = _private_file_label(st, euid)
+        if label is not None:
+            problem = (StorageErrorCode.FILE_UNSAFE, label)
+        elif st.st_size > max_size:
+            problem = (StorageErrorCode.FILE_TOO_LARGE, "file:limit")
+        elif _identity(_named_identity(dfd, name)) != _identity(st):
+            problem = (StorageErrorCode.FILE_UNSAFE, "file:changed")
+    except OSError as error:
+        problem = (_fs_code(error, missing=StorageErrorCode.FILE_MISSING), "file:create" if create else "file:open")
+    if problem is not None:
+        if create and fd is not None and identity is not None:
+            _posix_unlink_if_ours(dfd, name, fd, identity)
+        _close_quietly(fd)
+        raise _fail(*problem)
+    return fd, st  # type: ignore[return-value]
+
+
+def _posix_create_member(dfd: int, name: str, max_size: int) -> tuple[int, os.stat_result]:
+    flags = (os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+             | getattr(os, "O_NOCTTY", 0))
+    return _posix_open_member(dfd, name, flags, max_size, create=True)
+
+
+def _posix_open_append_member(dfd: int, name: str, max_size: int) -> tuple[int, os.stat_result]:
+    flags = (os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW | os.O_CLOEXEC | getattr(os, "O_NOCTTY", 0)
+             | getattr(os, "O_NONBLOCK", 0))
+    return _posix_open_member(dfd, name, flags, max_size, create=False)
+
+
+def _posix_open_read_member(dfd: int, name: str, max_size: int) -> tuple[int, os.stat_result]:
+    flags = (os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | getattr(os, "O_NOCTTY", 0)
+             | getattr(os, "O_NONBLOCK", 0))
+    return _posix_open_member(dfd, name, flags, max_size, create=False)
+
+
+def _posix_write_fully(fd: int, data: bytes) -> bool:
+    """Write all of ``data`` (temp files only; segments use a single write). False on a zero write."""
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            return False
+        view = view[written:]
+    return True
+
+
+def _posix_replace(dfd: int, name: str, data: bytes) -> Durability:
+    """Atomically replace ``name`` with ``data`` via the fixed temp name (architecture 5.4, correction C)."""
+    flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC | getattr(os, "O_NOCTTY", 0))
+    euid = os.geteuid()  # type: ignore[attr-defined]
+    temp = ANCHOR_TEMP_NAME
+    fd: int | None = None
+    identity: _Identity | None = None
+    problem: tuple[StorageErrorCode, str] | None = None
+    replaced = False
+    levels: list[Durability] = []
+    try:
+        fd = os.open(temp, flags, 0o600, dir_fd=dfd)
+        identity = _identity(os.fstat(fd))  # recorded first, so any later failure can clean up
+        os.fchmod(fd, 0o600)
+        st = os.fstat(fd)
+        label = _private_file_label(st, euid)
+        if label is not None:
+            problem = (StorageErrorCode.FILE_UNSAFE, label)
+        elif not _posix_write_fully(fd, data):
+            problem = (StorageErrorCode.PARTIAL_WRITE, "file:partial")
+        else:
+            try:
+                levels.append(_sync_level(fd))
+            except OSError:
+                problem = (StorageErrorCode.DURABILITY_FAILED, "file:sync")
+        if problem is None:
+            if _identity(_named_identity(dfd, temp)) != identity:
+                problem = (StorageErrorCode.FILE_UNSAFE, "file:changed")
+            else:
+                try:
+                    target = _named_identity(dfd, name)
+                except FileNotFoundError:
+                    target = None
+                if target is not None and (not stat.S_ISREG(target.st_mode) or target.st_nlink != 1):
+                    problem = (StorageErrorCode.FILE_UNSAFE, "file:target")
+        if problem is None:
+            os.replace(temp, name, src_dir_fd=dfd, dst_dir_fd=dfd)
+            replaced = True
+            if _identity(_named_identity(dfd, name)) != identity:
+                problem = (StorageErrorCode.FILE_UNSAFE, "file:replaced")  # detection only
+    except OSError as error:
+        if fd is None:
+            problem = (_fs_code(error, missing=StorageErrorCode.STORAGE_UNAVAILABLE), "file:temp-create")
+            if problem[0] is StorageErrorCode.FILE_EXISTS:
+                problem = (StorageErrorCode.FILE_EXISTS, "file:temp-exists")  # an orphan is never reused
+        elif replaced:
+            problem = (StorageErrorCode.FILE_UNSAFE, "file:replaced")
+        else:
+            problem = (_fs_code(error, missing=StorageErrorCode.STORAGE_UNAVAILABLE), "file:replace")
+    if problem is None:
+        try:
+            levels.append(_sync_level(dfd))
+        except OSError:
+            problem = (StorageErrorCode.DURABILITY_UNCERTAIN, "directory:sync-after-replace")
+    if problem is not None and fd is not None and identity is not None and not replaced:
+        _posix_unlink_if_ours(dfd, temp, fd, identity)  # our temp only; anything else is left alone
+    _close_quietly(fd)
+    if problem is not None:
+        raise _fail(*problem)
+    return _weakest(*levels)
+
+
+def _posix_link_no_replace(dfd: int, source: str, target: str) -> Durability:
+    """Quarantine without overwriting: states S0 -> S1 (two links) -> S2 (correction B)."""
+    euid = os.geteuid()  # type: ignore[attr-defined]
+    flags = (os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | getattr(os, "O_NOCTTY", 0) | getattr(os, "O_NONBLOCK", 0))
+    fd: int | None = None
+    problem: tuple[StorageErrorCode, str] | None = None
+    level: Durability | None = None
+    try:
+        fd = os.open(source, flags, dir_fd=dfd)
+        st = os.fstat(fd)
+        identity = _identity(st)
+        label = _private_file_label(st, euid)  # S0 requires exactly one link
+        if label is not None:
+            problem = (StorageErrorCode.FILE_UNSAFE, label)
+        elif _identity(_named_identity(dfd, source)) != identity:
+            problem = (StorageErrorCode.FILE_UNSAFE, "file:changed")
+        if problem is None:
+            os.link(source, target, src_dir_fd=dfd, dst_dir_fd=dfd, follow_symlinks=False)  # never clobbers
+            if _identity(_named_identity(dfd, target)) != identity or os.fstat(fd).st_nlink != 2:
+                problem = (StorageErrorCode.FILE_UNSAFE, "file:linked")
+        if problem is None:
+            if _identity(_named_identity(dfd, source)) != identity:
+                problem = (StorageErrorCode.FILE_UNSAFE, "file:changed")  # stop in S1; no repair
+            else:
+                os.unlink(source, dir_fd=dfd)
+                if os.fstat(fd).st_nlink != 1:
+                    problem = (StorageErrorCode.FILE_UNSAFE, "file:unlinked")
+    except OSError as error:
+        problem = (_fs_code(error, missing=StorageErrorCode.FILE_MISSING), "file:quarantine")
+    if problem is None:
+        try:
+            level = _sync_level(dfd)
+        except OSError:
+            problem = (StorageErrorCode.DURABILITY_UNCERTAIN, "directory:sync")
+    _close_quietly(fd)
+    if problem is not None:
+        raise _fail(*problem)
+    return level  # type: ignore[return-value]
+
+
+def _posix_list(dfd: int, allowed: object, max_entries: int) -> ListResult:
+    names: list[str] = []
+    others = 0
+    count = 0
+    problem: tuple[StorageErrorCode, str] | None = None
+    try:
+        with os.scandir(dfd) as entries:
+            for entry in entries:
+                count += 1
+                if count > max_entries:
+                    problem = (StorageErrorCode.ENTRY_LIMIT_EXCEEDED, "directory:entries")
+                    break
+                if allowed(entry.name):  # type: ignore[operator]
+                    names.append(entry.name)
+                else:
+                    others += 1
+    except OSError as error:
+        problem = (_fs_code(error, missing=StorageErrorCode.STORAGE_UNAVAILABLE), "directory:list")
+    if problem is not None:
+        raise _fail(*problem)
+    return ListResult(tuple(sorted(names)), others)
+
+
+# --- C2-C: Linux mountinfo (best effort, fail closed; D-C2-7, D-C2C-4a) ---------------------------------
+
+MAX_MOUNTINFO_BYTES = 1 << 20
+MAX_MOUNTINFO_LINES = 10_000
+MAX_MOUNTINFO_LINE_BYTES = 8_192
+_REFUSED_FILESYSTEMS = frozenset({
+    b"nfs", b"nfs4", b"cifs", b"smb3", b"smbfs", b"fuse", b"fuseblk", b"vfat", b"exfat", b"msdos",
+    b"9p", b"ceph", b"glusterfs", b"afs",
+    b"tmpfs", b"ramfs",  # C2-C-H2: memory-backed, lost at reboot; never acceptable for durable audit data
+})
+_MAJOR_MINOR_RE = re.compile(rb"([0-9]{1,10}):([0-9]{1,10})")
+_FSTYPE_RE = re.compile(rb"[a-z0-9][a-z0-9._+-]{0,63}")
+_DIGITS_RE = re.compile(rb"[0-9]{1,10}")
+
+
+@dataclass(frozen=True)
+class MountEntry:
+    major: int
+    minor: int
+    mount_point: bytes
+    fstype: bytes
+
+
+def _mount_fail(label: str) -> StorageError:
+    return _fail(StorageErrorCode.UNSUPPORTED_FILESYSTEM, label)
+
+
+def _unescape_mount_field(field: bytes) -> bytes | None:
+    """Undo mountinfo's ``\\ooo`` octal escapes. Any other backslash use is malformed (None)."""
+    out = bytearray()
+    index = 0
+    while index < len(field):
+        byte = field[index]
+        if byte != 0x5C:
+            out.append(byte)
+            index += 1
+            continue
+        digits = field[index + 1:index + 4]
+        if len(digits) != 3 or any(d not in b"01234567" for d in digits):
+            return None
+        value = int(digits, 8)
+        if value == 0 or value > 0xFF:
+            return None
+        out.append(value)
+        index += 4
+    return bytes(out)
+
+
+def parse_mountinfo(data: object) -> tuple[MountEntry, ...]:
+    """Parse ``/proc/self/mountinfo`` bytes strictly and with bounds (pure). Fails closed."""
+    if type(data) is not bytes or not data or len(data) > MAX_MOUNTINFO_BYTES or not data.endswith(b"\n"):
+        raise _mount_fail("mountinfo:size")
+    lines = data[:-1].split(b"\n")
+    if len(lines) > MAX_MOUNTINFO_LINES:
+        raise _mount_fail("mountinfo:size")
+    entries: list[MountEntry] = []
+    for line in lines:
+        if not line or len(line) > MAX_MOUNTINFO_LINE_BYTES or any(b < 0x20 or b > 0x7E for b in line):
+            raise _mount_fail("mountinfo:line")
+        fields = line.split(b" ")
+        if b"" in fields or len(fields) < 10 or b"-" not in fields[6:]:
+            raise _mount_fail("mountinfo:line")
+        separator = fields.index(b"-", 6)
+        if len(fields) != separator + 4:
+            raise _mount_fail("mountinfo:line")
+        if _DIGITS_RE.fullmatch(fields[0]) is None or _DIGITS_RE.fullmatch(fields[1]) is None:
+            raise _mount_fail("mountinfo:line")
+        device = _MAJOR_MINOR_RE.fullmatch(fields[2])
+        mount_point = _unescape_mount_field(fields[4])
+        fstype = fields[separator + 1]
+        if device is None or mount_point is None or not mount_point.startswith(b"/") or _FSTYPE_RE.fullmatch(fstype) is None:
+            raise _mount_fail("mountinfo:line")
+        entries.append(MountEntry(int(device.group(1)), int(device.group(2)), mount_point, fstype))
+    return tuple(entries)
+
+
+def _mount_covers(mount_point: bytes, path: bytes) -> bool:
+    return mount_point == b"/" or path == mount_point or path.startswith(mount_point + b"/")
+
+
+def filesystem_type(entries: tuple[MountEntry, ...], major: int, minor: int, path: bytes) -> bytes:
+    """The filesystem type of the mount holding ``path`` on device ``major:minor`` (pure, fail closed).
+
+    Among entries for the device (bind mounts share one), the longest mount point that is a prefix of
+    the canonical path wins; a tie between different types is ambiguous and refused.
+    """
+    candidates = [e for e in entries if (e.major, e.minor) == (major, minor) and _mount_covers(e.mount_point, path)]
+    if not candidates:
+        raise _mount_fail("mountinfo:device")
+    longest = max(len(e.mount_point) for e in candidates)
+    types = {e.fstype for e in candidates if len(e.mount_point) == longest}
+    if len(types) != 1:
+        raise _mount_fail("mountinfo:ambiguous")
+    return types.pop()
+
+
+def _is_refused_filesystem(fstype: bytes) -> bool:
+    return fstype in _REFUSED_FILESYSTEMS or fstype.startswith(b"fuse.")
+
+
+def _read_mountinfo() -> bytes:
+    fd = os.open("/proc/self/mountinfo", os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        return _read_all(fd, MAX_MOUNTINFO_BYTES)
+    finally:
+        _close_quietly(fd)
+
+
+def _linux_filesystem_problem(fd: int, path: str) -> tuple[StorageErrorCode, str] | None:
+    """Linux only; other POSIX systems have no standard-library source (operator requirement)."""
+    if os.uname().sysname != "Linux":  # type: ignore[attr-defined]
+        return None
+    try:
+        st = os.fstat(fd)
+        data = _read_mountinfo()
+    except OSError:
+        return (StorageErrorCode.UNSUPPORTED_FILESYSTEM, "mountinfo:unreadable")
+    try:
+        fstype = filesystem_type(parse_mountinfo(data), os.major(st.st_dev), os.minor(st.st_dev),  # type: ignore[attr-defined]
+                                 os.fsencode(path))
+    except StorageError as error:
+        return (error.code, error.path)
+    if _is_refused_filesystem(fstype):
+        return (StorageErrorCode.UNSUPPORTED_FILESYSTEM, "directory:filesystem")
+    return None
+
+
 # --- Windows -------------------------------------------------------------------------------------------
 
 
@@ -577,3 +1113,519 @@ def _windows_read(path: str, identities: tuple[_Identity, ...], name: str, max_b
         raise _fail(*problem)
     _windows_recheck(path, identities)
     return data
+
+
+# --- C2-C: Windows audit storage is read-only (no create, write, rename or delete exists here) -------
+
+
+def _windows_open_read_member(path: str, identities: tuple[_Identity, ...], name: str,
+                              max_size: int) -> tuple[int, os.stat_result]:
+    full = path + "\\" + name
+    fd: int | None = None
+    opened: os.stat_result | None = None
+    problem: tuple[StorageErrorCode, str] | None = None
+    try:
+        _windows_recheck(path, identities)
+        before = os.lstat(full)
+        if _is_reparse(before) or not stat.S_ISREG(before.st_mode):
+            problem = (StorageErrorCode.FILE_UNSAFE, "file:type")
+        elif before.st_nlink != 1:
+            problem = (StorageErrorCode.FILE_UNSAFE, "file:links")
+        elif before.st_size > max_size:
+            problem = (StorageErrorCode.FILE_TOO_LARGE, "file:limit")
+        else:
+            fd = os.open(full, os.O_RDONLY | os.O_BINARY | os.O_NOINHERIT)  # type: ignore[attr-defined]
+            opened = os.fstat(fd)
+            if opened.st_nlink != 1 or _identity(before) != _identity(opened):
+                problem = (StorageErrorCode.UNSAFE_PATH, "file:changed")
+            if problem is None:
+                problem = _windows_probe_problem(path, identities)
+            if problem is None:
+                _windows_recheck(path, identities)
+    except StorageError as error:
+        problem = (error.code, error.path)
+    except OSError as error:
+        problem = (_fs_code(error, missing=StorageErrorCode.FILE_MISSING), "file:open")
+    if problem is not None:
+        _close_quietly(fd)
+        raise _fail(*problem)
+    return fd, opened  # type: ignore[return-value]
+
+
+def _windows_list(path: str, identities: tuple[_Identity, ...], allowed: object, max_entries: int) -> ListResult:
+    names: list[str] = []
+    others = 0
+    count = 0
+    problem: tuple[StorageErrorCode, str] | None = None
+    try:
+        _windows_recheck(path, identities)
+        with os.scandir(path) as entries:
+            for entry in entries:
+                count += 1
+                if count > max_entries:
+                    problem = (StorageErrorCode.ENTRY_LIMIT_EXCEEDED, "directory:entries")
+                    break
+                if allowed(entry.name):  # type: ignore[operator]
+                    names.append(entry.name)
+                else:
+                    others += 1
+        if problem is None:
+            _windows_recheck(path, identities)
+    except StorageError as error:
+        problem = (error.code, error.path)
+    except OSError as error:
+        problem = (_fs_code(error, missing=StorageErrorCode.STORAGE_UNAVAILABLE), "directory:list")
+    if problem is not None:
+        raise _fail(*problem)
+    return ListResult(tuple(sorted(names)), others)
+
+
+# --- C2-C: objects ------------------------------------------------------------------------------------
+
+
+class _Guarded:
+    """Shared object hygiene: no pickling or copying; ``repr`` never shows paths or identities."""
+
+    __slots__ = ()
+
+    def __reduce_ex__(self, protocol: object) -> object:
+        raise TypeError(f"{type(self).__name__} cannot be pickled")
+
+    def __copy__(self) -> object:
+        raise TypeError(f"{type(self).__name__} cannot be copied")
+
+    def __deepcopy__(self, memo: object) -> object:
+        raise TypeError(f"{type(self).__name__} cannot be copied")
+
+    def __enter__(self) -> object:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()  # type: ignore[attr-defined]
+
+
+class CreatedToken(_Guarded):
+    """Proof that this process created one chain file, bound to a retained descriptor (correction A).
+
+    While the token's descriptor is open the inode cannot be freed, so its ``(st_dev, st_ino)`` cannot be
+    reused by another file. Single use: :meth:`ChainDirectory.remove_created` consumes it. A closed token
+    can never authorize a removal; cleanup is then an operator task.
+    """
+
+    __slots__ = ("_closed", "_dfd", "_fd", "_identity", "_name")
+
+    def __init__(self, *, _fd: int, _dfd: int, _name: str, _identity: _Identity) -> None:
+        self._fd = _fd
+        self._dfd = _dfd
+        self._name = _name
+        self._identity = _identity
+        self._closed = False
+
+    def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            _close_quietly(self._fd)
+            _close_quietly(self._dfd)
+
+    def __repr__(self) -> str:
+        return f"CreatedToken(closed={self._closed})"
+
+    __str__ = __repr__
+
+
+class SafeAppendFile(_Guarded):
+    """An open chain segment (POSIX). Single-write appends; any failure seals the handle."""
+
+    __slots__ = ("_closed", "_created", "_dfd", "_fd", "_identity", "_max", "_name", "_sealed", "_size")
+
+    def __init__(self, *, _fd: int, _dfd: int, _name: str, _st: os.stat_result, _max: int, _created: bool) -> None:
+        self._fd = _fd
+        self._dfd = _dfd
+        self._name = _name
+        self._identity = _identity(_st)
+        self._size = _st.st_size
+        self._max = _max
+        self._created = _created
+        self._sealed = False
+        self._closed = False
+
+    @property
+    def size(self) -> int:
+        return self._size
+
+    @property
+    def sealed(self) -> bool:
+        return self._sealed
+
+    def _require_usable(self) -> None:
+        if self._closed:
+            raise _fail(StorageErrorCode.STORAGE_UNAVAILABLE, "file:closed")
+        if self._sealed:
+            raise _fail(StorageErrorCode.FILE_UNSAFE, "file:sealed")
+
+    def append(self, data: object) -> None:
+        """Append ``data`` with exactly one ``os.write`` (C0-H1 4.2, D-C2C-6)."""
+        self._require_usable()
+        if type(data) is not bytes or not data:
+            raise _fail(StorageErrorCode.INPUT_TYPE_INVALID, "file:data")
+        if self._size + len(data) > self._max:
+            raise _fail(StorageErrorCode.FILE_TOO_LARGE, "file:limit")
+        euid = os.geteuid()  # type: ignore[attr-defined]
+        problem: tuple[StorageErrorCode, str] | None = None
+        try:
+            st = os.fstat(self._fd)
+            label = _private_file_label(st, euid)
+            if label is None and (_identity(st) != self._identity or st.st_size != self._size):
+                label = "file:changed"  # truncated, appended to by someone else, or replaced
+            if label is not None:
+                problem = (StorageErrorCode.FILE_UNSAFE, label)
+            else:
+                written = os.write(self._fd, data)
+                if written != len(data):
+                    self._size += max(written, 0)
+                    problem = (StorageErrorCode.PARTIAL_WRITE, "file:partial")
+                else:
+                    self._size += written
+        except OSError as error:
+            problem = (_fs_code(error, missing=StorageErrorCode.FILE_MISSING), "file:append")
+        if problem is not None:
+            self._sealed = True
+            raise _fail(*problem)
+
+    def sync(self) -> Durability:
+        """Make appended bytes durable as far as the platform reports; failure seals the handle."""
+        self._require_usable()
+        try:
+            return _sync_level(self._fd)
+        except OSError:
+            pass
+        self._sealed = True
+        raise _fail(StorageErrorCode.DURABILITY_FAILED, "file:sync")
+
+    def verify_name(self) -> None:
+        """The segment name must still refer to this open file (detects rename or replacement)."""
+        if self._closed:
+            raise _fail(StorageErrorCode.STORAGE_UNAVAILABLE, "file:closed")
+        problem = False
+        try:
+            named = _named_identity(self._dfd, self._name)
+            problem = _identity(named) != self._identity or not stat.S_ISREG(named.st_mode)
+        except OSError:
+            problem = True
+        if problem:
+            raise _fail(StorageErrorCode.FILE_UNSAFE, "file:replaced")
+
+    def created_token(self) -> CreatedToken:
+        """A single-use cleanup token for a segment this handle created (correction A)."""
+        if self._closed or not self._created:
+            raise _fail(StorageErrorCode.INPUT_TYPE_INVALID, "token:not-created")
+        fd: int | None = None
+        dfd: int | None = None
+        try:
+            fd = os.dup(self._fd)
+            dfd = os.dup(self._dfd)
+        except OSError:
+            _close_quietly(fd)
+            fd = None
+        if fd is None or dfd is None:
+            raise _fail(StorageErrorCode.STORAGE_UNAVAILABLE, "token:create")
+        return CreatedToken(_fd=fd, _dfd=dfd, _name=self._name, _identity=self._identity)
+
+    def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            _close_quietly(self._fd)
+            _close_quietly(self._dfd)
+
+    def __repr__(self) -> str:
+        return f"SafeAppendFile(closed={self._closed}, sealed={self._sealed})"
+
+    __str__ = __repr__
+
+
+class SafeReadFile(_Guarded):
+    """A bounded read handle for a chain member (POSIX, and Windows read-only)."""
+
+    __slots__ = ("_closed", "_dfd", "_fd", "_identities", "_kind", "_max", "_name", "_opened", "_path", "_total")
+
+    def __init__(self, *, _kind: str, _fd: int, _st: os.stat_result, _max: int, _name: str,
+                 _dfd: int | None = None, _path: str | None = None,
+                 _identities: tuple[_Identity, ...] = ()) -> None:
+        self._kind = _kind
+        self._fd = _fd
+        self._opened = _st
+        self._max = _max
+        self._name = _name
+        self._dfd = _dfd
+        self._path = _path
+        self._identities = _identities
+        self._total = 0
+        self._closed = False
+
+    def read(self, max_bytes: object) -> bytes:
+        """Return up to ``max_bytes``; ``b''`` at the end. Never past the handle's ``max_size``."""
+        if self._closed:
+            raise _fail(StorageErrorCode.STORAGE_UNAVAILABLE, "file:closed")
+        limit = _check_limit(max_bytes, MAX_FILE_BYTES, "file:read-size")
+        problem: tuple[StorageErrorCode, str] | None = None
+        chunk = b""
+        try:
+            chunk = os.read(self._fd, min(limit, self._max - self._total + 1))
+        except OSError as error:
+            problem = (_fs_code(error, missing=StorageErrorCode.FILE_MISSING), "file:read")
+        if problem is None and self._total + len(chunk) > self._max:
+            problem = (StorageErrorCode.FILE_TOO_LARGE, "file:limit")  # the file grew past its bound
+        if problem is not None:
+            raise _fail(*problem)
+        self._total += len(chunk)
+        return chunk
+
+    def verify_unchanged(self) -> None:
+        """Identity, link count, size and mtime are as they were at open, and the name still matches."""
+        if self._closed:
+            raise _fail(StorageErrorCode.STORAGE_UNAVAILABLE, "file:closed")
+        problem: tuple[StorageErrorCode, str] | None = None
+        try:
+            now = os.fstat(self._fd)
+            if now.st_nlink != 1 or not _stable(self._opened, now):
+                problem = (StorageErrorCode.FILE_UNSAFE, "file:changed")
+            elif self._kind == "posix":
+                if _identity(_named_identity(self._dfd, self._name)) != _identity(now):  # type: ignore[arg-type]
+                    problem = (StorageErrorCode.FILE_UNSAFE, "file:replaced")
+            else:
+                if _identity(os.lstat(self._path + "\\" + self._name)) != _identity(now):  # type: ignore[operator]
+                    problem = (StorageErrorCode.UNSAFE_PATH, "file:replaced")
+                else:
+                    _windows_recheck(self._path, self._identities)  # type: ignore[arg-type]
+        except StorageError as error:
+            problem = (error.code, error.path)
+        except OSError:
+            problem = (StorageErrorCode.FILE_UNSAFE, "file:replaced")
+        if problem is not None:
+            raise _fail(*problem)
+
+    def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            _close_quietly(self._fd)
+            _close_quietly(self._dfd)
+
+    def __repr__(self) -> str:
+        return f"SafeReadFile(closed={self._closed})"
+
+    __str__ = __repr__
+
+
+class _AuditBase(_Guarded):
+    __slots__ = ("_closed", "_fd", "_identities", "_kind", "_path")
+    _ROLE = ""
+
+    def __init__(self, *, _kind: str, _fd: int | None, _path: str, _identities: tuple[_Identity, ...]) -> None:
+        self._kind = _kind
+        self._fd = _fd
+        self._path = _path
+        self._identities = _identities
+        self._closed = False
+
+    def _require_open(self) -> None:
+        if not self._closed:
+            return
+        raise _fail(StorageErrorCode.STORAGE_UNAVAILABLE, "directory:closed")
+
+    def _require_posix_write(self) -> None:
+        """First statement of every write method: Windows (and incapable POSIX) refuse before any I/O."""
+        self._require_open()
+        windows = self._kind != "posix"
+        if windows:
+            raise _fail(StorageErrorCode.UNSUPPORTED_PLATFORM, "file:write-windows")
+        if not _posix_write_capable():
+            raise _fail(StorageErrorCode.UNSUPPORTED_PLATFORM, "file:write-platform")
+
+    def _allowed(self, name: str) -> bool:
+        raise NotImplementedError
+
+    def list_names(self, *, max_entries: object = MAX_LIST_ENTRIES) -> ListResult:
+        """Bounded listing: allowed names (sorted) and a count of other entries, never their names."""
+        self._require_open()
+        limit = _check_limit(max_entries, MAX_LIST_ENTRIES, "directory:max-entries")
+        if self._kind == "posix":
+            if os.scandir not in os.supports_fd:
+                raise _fail(StorageErrorCode.UNSUPPORTED_PLATFORM, "directory:list-platform")
+            return _posix_list(self._fd, self._allowed, limit)  # type: ignore[arg-type]
+        return _windows_list(self._path, self._identities, self._allowed, limit)
+
+    def sync(self) -> Durability:
+        """Sync the directory (persists entries created, replaced or removed in it). POSIX only."""
+        self._require_posix_write()
+        try:
+            return _sync_level(self._fd)  # type: ignore[arg-type]
+        except OSError:
+            pass
+        raise _fail(StorageErrorCode.DURABILITY_UNCERTAIN, "directory:sync")
+
+    def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            fd, self._fd = self._fd, None
+            _close_quietly(fd)
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}(role={self._ROLE!r}, closed={self._closed})"
+
+    __str__ = __repr__
+
+
+class AuditDirectory(_AuditBase):
+    """The audit root (B2-M2-C2-C). It holds only ``chain-<32 hex>`` directories."""
+
+    __slots__ = ()
+    _ROLE = "audit_root"
+
+    @classmethod
+    def open(cls, path: object, *, windows_attestation: object = None) -> AuditDirectory:
+        kind = _platform()
+        if kind == "posix":
+            fd = _posix_open_directory(path)  # C2-B walk: canonical, no symlinks, strict ancestors, private
+            problem = _linux_filesystem_problem(fd, path)  # type: ignore[arg-type]
+            if problem is not None:
+                _close_quietly(fd)
+                raise _fail(*problem)
+            return cls(_kind="posix", _fd=fd, _path=path, _identities=())  # type: ignore[arg-type]
+        if kind == "nt":
+            attested = type(windows_attestation) is WindowsAttestation and windows_attestation.confirmed()
+            if not attested:
+                raise _fail(StorageErrorCode.ATTESTATION_REQUIRED, "directory:windows")
+            checked, identities = _windows_open_directory(path)
+            return cls(_kind="nt", _fd=None, _path=checked, _identities=identities)
+        unsupported = _fail(StorageErrorCode.UNSUPPORTED_PLATFORM, "directory:platform")
+        raise unsupported
+
+    def _allowed(self, name: str) -> bool:
+        return _CHAIN_DIR_RE.fullmatch(name) is not None
+
+    def open_chain(self, name: object, *, create: bool = False) -> ChainDirectory:
+        """Open (or, POSIX only, create with mode 0o700) a ``chain-<32 hex>`` directory."""
+        if create is not False:
+            if create is not True:
+                raise _fail(StorageErrorCode.INPUT_TYPE_INVALID, "directory:create")
+            self._require_posix_write()
+        self._require_open()
+        checked = check_chain_directory_name(name)
+        if self._kind == "posix":
+            fd = _posix_open_child(self._fd, checked, create)  # type: ignore[arg-type]
+            child_path = self._path + "/" + checked
+            problem = _linux_filesystem_problem(fd, child_path)
+            if problem is not None:
+                _close_quietly(fd)
+                raise _fail(*problem)
+            return ChainDirectory(_kind="posix", _fd=fd, _path=child_path, _identities=())
+        child, identities = _windows_open_directory(self._path + "\\" + checked)
+        return ChainDirectory(_kind="nt", _fd=None, _path=child, _identities=identities)
+
+
+class ChainDirectory(_AuditBase):
+    """One chain's directory: segments, the anchor, its temp and quarantine names (D-C2C-7)."""
+
+    __slots__ = ()
+    _ROLE = "chain"
+
+    def _allowed(self, name: str) -> bool:
+        return _is_listed_member(name)
+
+    def _dup_dir(self) -> int:
+        try:
+            return os.dup(self._fd)  # type: ignore[arg-type]
+        except OSError:
+            pass
+        raise _fail(StorageErrorCode.STORAGE_UNAVAILABLE, "directory:dup")
+
+    def create_exclusive(self, name: object, *, max_size: object) -> SafeAppendFile:
+        """Create a new segment (``O_EXCL``, mode 0o600, never overwrites) and return its append handle."""
+        self._require_posix_write()
+        checked = check_chain_member_name(name, kind="segment")
+        limit = _check_limit(max_size, MAX_FILE_BYTES, "file:max-size")
+        dfd = self._dup_dir()
+        try:
+            fd, st = _posix_create_member(self._fd, checked, limit)  # type: ignore[arg-type]
+        except StorageError:
+            _close_quietly(dfd)
+            raise
+        return SafeAppendFile(_fd=fd, _dfd=dfd, _name=checked, _st=st, _max=limit, _created=True)
+
+    def open_append(self, name: object, *, max_size: object) -> SafeAppendFile:
+        """Reopen an existing segment for appending; size and identity tracking start from ``fstat``."""
+        self._require_posix_write()
+        checked = check_chain_member_name(name, kind="segment")
+        limit = _check_limit(max_size, MAX_FILE_BYTES, "file:max-size")
+        dfd = self._dup_dir()
+        try:
+            fd, st = _posix_open_append_member(self._fd, checked, limit)  # type: ignore[arg-type]
+        except StorageError:
+            _close_quietly(dfd)
+            raise
+        return SafeAppendFile(_fd=fd, _dfd=dfd, _name=checked, _st=st, _max=limit, _created=False)
+
+    def open_read(self, name: object, *, max_size: object) -> SafeReadFile:
+        """Open a segment, the anchor, its temp or a quarantine file for bounded reading."""
+        self._require_open()
+        checked = check_chain_member_name(name, kind="readable")
+        limit = _check_limit(max_size, MAX_FILE_BYTES, "file:max-size")
+        if self._kind == "posix":
+            dfd = self._dup_dir()
+            try:
+                fd, st = _posix_open_read_member(self._fd, checked, limit)  # type: ignore[arg-type]
+            except StorageError:
+                _close_quietly(dfd)
+                raise
+            return SafeReadFile(_kind="posix", _fd=fd, _st=st, _max=limit, _name=checked, _dfd=dfd)
+        fd, st = _windows_open_read_member(self._path, self._identities, checked, limit)
+        return SafeReadFile(_kind="nt", _fd=fd, _st=st, _max=limit, _name=checked, _path=self._path,
+                            _identities=self._identities)
+
+    def replace_atomically(self, name: object, data: object, *, max_bytes: object) -> Durability:
+        """Replace the anchor atomically. ``DURABILITY_UNCERTAIN`` if the final directory sync fails."""
+        self._require_posix_write()
+        if type(name) is not str or name != ANCHOR_NAME:
+            raise _fail(StorageErrorCode.UNSAFE_PATH, "path:member-name")
+        limit = _check_limit(max_bytes, MAX_REPLACE_BYTES, "file:max-size")
+        if type(data) is not bytes or not data:
+            raise _fail(StorageErrorCode.INPUT_TYPE_INVALID, "file:data")
+        if len(data) > limit:
+            raise _fail(StorageErrorCode.FILE_TOO_LARGE, "file:limit")
+        return _posix_replace(self._fd, name, data)  # type: ignore[arg-type]
+
+    def link_no_replace(self, source: object, target: object) -> Durability:
+        """Quarantine ``source`` (anchor or temp) under ``target`` (``.seq_anchor.qN``) without overwriting."""
+        self._require_posix_write()
+        checked_source = check_chain_member_name(source, kind="quarantine-source")
+        checked_target = check_chain_member_name(target, kind="quarantine")
+        return _posix_link_no_replace(self._fd, checked_source, checked_target)  # type: ignore[arg-type]
+
+    def remove_created(self, token: object) -> bool:
+        """Remove a file this process created, proven by its live token (correction A). Single use.
+
+        Returns ``True`` if the file was removed, ``False`` if it was already gone. Refuses (and deletes
+        nothing) if the name now refers to anything else; reports a detected cleanup race.
+        """
+        self._require_posix_write()
+        if type(token) is not CreatedToken:
+            raise _fail(StorageErrorCode.INPUT_TYPE_INVALID, "token:type")
+        if token._closed:
+            raise _fail(StorageErrorCode.FILE_UNSAFE, "token:closed")
+        problem: tuple[StorageErrorCode, str] | None = None
+        removed = False
+        try:
+            if _identity(os.fstat(token._dfd)) != _identity(os.fstat(self._fd)):  # type: ignore[arg-type]
+                problem = (StorageErrorCode.INPUT_TYPE_INVALID, "token:directory")
+            else:
+                gone = os.fstat(token._fd).st_nlink == 0
+                label = _posix_unlink_if_ours(token._dfd, token._name, token._fd, token._identity)
+                if label is not None:
+                    problem = (StorageErrorCode.FILE_UNSAFE, label)
+                removed = not gone and label is None
+        except OSError:
+            problem = (StorageErrorCode.STORAGE_UNAVAILABLE, "token:check")
+        token.close()  # single use, whatever happened
+        if problem is not None:
+            raise _fail(*problem)
+        return removed
