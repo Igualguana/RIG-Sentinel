@@ -1240,6 +1240,15 @@ def test_linux_descriptors_are_never_leaked(chain, monkeypatch):
     def count():
         return len(os.listdir("/proc/self/fd"))
 
+    # C2-C-H4: real members whose open() succeeds and whose post-open validation then fails, so the
+    # rejection path in _posix_open_member must close the descriptor it already holds.
+    with directory.create_exclusive("seg-1.jsonl", max_size=64) as segment:
+        segment.append(LINE)  # safe (0o600, one link, ours) but larger than the bound used below
+    with directory.create_exclusive("seg-2.jsonl", max_size=64):
+        pass
+    os.chmod(os.path.join(path, "seg-2.jsonl"), 0o640)  # group bits: rejected only after fstat
+    assert len(LINE) > 1
+
     before = count()
     for _ in range(3):
         with directory.create_exclusive("seg-0.jsonl", max_size=64) as segment:
@@ -1252,6 +1261,13 @@ def test_linux_descriptors_are_never_leaked(chain, monkeypatch):
             reader.read(64)
         code_of(directory.create_exclusive, "seg-01.jsonl", max_size=64)
         directory.list_names()
+        assert pair_of(directory.open_read, "seg-1.jsonl", max_size=1) == (StorageErrorCode.FILE_TOO_LARGE,
+                                                                           "file:limit")
+        assert pair_of(directory.open_append, "seg-1.jsonl", max_size=1) == (StorageErrorCode.FILE_TOO_LARGE,
+                                                                             "file:limit")
+        assert pair_of(directory.open_read, "seg-2.jsonl", max_size=64) == (StorageErrorCode.FILE_UNSAFE,
+                                                                            "file:permissions")
+        assert count() == before  # stable after every round of rejected opens, not only at the end
     assert count() == before
 
 
