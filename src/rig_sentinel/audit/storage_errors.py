@@ -73,6 +73,15 @@ class StorageErrorCode(StrEnum):
     KEY_FILE_EXISTS = "key_file_exists"
     KEY_ID_MISMATCH = "key_id_mismatch"
     STORAGE_UNAVAILABLE = "storage_unavailable"
+    # Generic audit-storage files and directories (B2-M2-C2-C, D-C2C-1; key files keep the codes above)
+    FILE_MISSING = "file_missing"
+    FILE_UNSAFE = "file_unsafe"
+    FILE_EXISTS = "file_exists"
+    PARTIAL_WRITE = "partial_write"
+    DURABILITY_FAILED = "durability_failed"  # a file sync failed: bytes may be visible but are not confirmed durable
+    DURABILITY_UNCERTAIN = "durability_uncertain"  # a namespace change happened; its directory sync failed
+    ENTRY_LIMIT_EXCEEDED = "entry_limit_exceeded"
+    FILE_TOO_LARGE = "file_too_large"
     # Internal invariants (splice proof)
     INTERNAL_INVARIANT = "internal_invariant"
 
