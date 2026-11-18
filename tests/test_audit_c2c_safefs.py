@@ -1071,17 +1071,43 @@ def test_posix_quarantine_never_clobbers(chain):
         assert handle.read() == b"two\n"
 
 
+def _patch_dir_fd_unlink(monkeypatch, behaviour):
+    """Fault-inject ``os.unlink`` as a descriptor-relative (``dir_fd``) operation, for one test only.
+
+    Every write first runs the real capability probe ``_posix_write_capable``, which requires
+    ``os.unlink in os.supports_dir_fd``. A plain Python replacement is not in that set, so the probe
+    correctly refuses with ``file:write-platform`` before the fault is reached (C2-C-H3). The probe is
+    left untouched: the double is added to a *copy* of the set, and monkeypatch restores both the
+    function and the original set at teardown or ``monkeypatch.undo()``. Returns the recorded calls.
+    """
+    calls = []
+
+    def unlink(name, *, dir_fd):  # keyword-only dir_fd: only descriptor-relative unlinks are simulated
+        calls.append((name, dir_fd))
+        return behaviour(name, dir_fd=dir_fd)
+
+    monkeypatch.setattr(sp.os, "supports_dir_fd", set(sp.os.supports_dir_fd) | {unlink})
+    monkeypatch.setattr(sp.os, "unlink", unlink)
+    assert sp._posix_write_capable()  # the real probe accepts the double; nothing else is relaxed
+    return calls
+
+
 @posix_only
 def test_posix_quarantine_crash_between_link_and_unlink_fails_closed(chain, monkeypatch):
     directory, path = chain
     directory.replace_atomically(ANCHOR_NAME, b"one\n", max_bytes=1024)
+    original_supported = os.supports_dir_fd
 
-    def crash(*args, **kwargs):
+    def crash(name, *, dir_fd):
         raise OSError(errno.EIO, "synthetic crash after link")
 
-    monkeypatch.setattr(sp.os, "unlink", crash)
-    assert code_of(directory.link_no_replace, ANCHOR_NAME, ".seq_anchor.q1") is StorageErrorCode.STORAGE_UNAVAILABLE
+    calls = _patch_dir_fd_unlink(monkeypatch, crash)
+    assert pair_of(directory.link_no_replace, ANCHOR_NAME, ".seq_anchor.q1") == (
+        StorageErrorCode.STORAGE_UNAVAILABLE, "file:quarantine")
+    assert [name for name, _ in calls] == [ANCHOR_NAME]  # the injected crash really ran, after the link
+    assert all(isinstance(dir_fd, int) and dir_fd >= 0 for _, dir_fd in calls)
     monkeypatch.undo()
+    assert os.supports_dir_fd is original_supported and os.unlink in os.supports_dir_fd  # fully restored
     assert os.stat(os.path.join(path, ANCHOR_NAME)).st_nlink == 2  # state S1, left for the operator
     for name in (ANCHOR_NAME, ".seq_anchor.q1"):
         assert pair_of(directory.open_read, name, max_size=64) == (StorageErrorCode.FILE_UNSAFE, "file:links")
@@ -1155,15 +1181,17 @@ def test_posix_cleanup_race_is_detected_not_prevented(chain, monkeypatch):
         token = segment.created_token()
     real_unlink = os.unlink
 
-    def swap_then_unlink(name, *args, **kwargs):  # a same-credential attacker wins the stat -> unlink window
+    def swap_then_unlink(name, *, dir_fd):  # a same-credential attacker wins the stat -> unlink window
         os.rename(member, member + ".ours")
         with open(member, "wb") as handle:
             handle.write(b"foreign")
-        return real_unlink(name, *args, **kwargs)
+        return real_unlink(name, dir_fd=dir_fd)  # the real descriptor-relative unlink
 
-    monkeypatch.setattr(sp.os, "unlink", swap_then_unlink)
+    calls = _patch_dir_fd_unlink(monkeypatch, swap_then_unlink)
     assert pair_of(directory.remove_created, token) == (StorageErrorCode.FILE_UNSAFE, "file:cleanup-race")
+    assert [name for name, _ in calls] == ["seg-0.jsonl"]  # the swap really ran inside the unlink window
     assert os.path.exists(member + ".ours")  # our object survived; the residual is reported, never hidden
+    assert not os.path.lexists(member)  # the substituted (foreign) file was deleted: detected, not prevented
 
 
 @posix_only
