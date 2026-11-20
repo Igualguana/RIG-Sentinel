@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   test-and-scan:
-    name: Python 3.13 / ${{ matrix.os }}
+    name: Python ${{ matrix.python }} / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
 
@@ -24,6 +24,10 @@ jobs:
       matrix:
         os:
           - macos-latest
+        python:
+          - "3.11"
+          - "3.12"
+          - "3.13"
 
     steps:
       - name: Check out source
@@ -31,10 +35,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Python 3.13
+      - name: Set up Python ${{ matrix.python }}
         uses: actions/setup-python@v6
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python }}
 
       - name: Show system information
         shell: bash
@@ -48,6 +52,14 @@ jobs:
           echo "Pip:"
           python -m pip --version
 
+      # B2-M2-C2-D: the native evidence below is Apple Silicon evidence only if both the runner and the
+      # interpreter are arm64 (an x86_64 runner or a Rosetta interpreter would fail here, not pass).
+      - name: Require a native arm64 runner and interpreter
+        shell: bash
+        run: |
+          test "$(uname -m)" = "arm64"
+          python -c "import platform, sys; m = platform.machine(); print('interpreter machine:', m); sys.exit(0 if m == 'arm64' else 1)"
+
       - name: Install RIG Sentinel and development dependencies
         shell: bash
         run: |
@@ -56,7 +68,15 @@ jobs:
       - name: Run all automated tests
         shell: bash
         run: |
-          python -m pytest -q
+          python -m pytest -q --junitxml=pytest-junit.xml
+
+      # Diagnostic steps run even after a failed step (but not after cancellation); any failure
+      # still fails the job.
+      - name: Require native macOS coverage (C2-B, C2-C and C2-D; skipped means failed)
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          python scripts/ci/assert_platform_coverage.py --junit pytest-junit.xml --profile macos
 
       - name: Validate CLI
         shell: bash
@@ -83,9 +103,63 @@ jobs:
       - name: Upload HTML and SARIF reports
         uses: actions/upload-artifact@v6
         with:
-          name: rig-sentinel-reports-${{ matrix.os }}
+          name: rig-sentinel-reports-${{ matrix.os }}-py${{ matrix.python }}
           path: |
             rig-sentinel.html
             rig-sentinel.sarif
+            pytest-junit.xml
           if-no-files-found: error
           retention-days: 14
+
+  # B2-M2-C2-D: writer-lock mutants on Apple Silicon. Non-editable install, as in the main workflow's
+  # mutant jobs, so the runner's temporary mutated copy of src/ is the code under test (its import probe
+  # fails the run otherwise). Every mutant must be caught; an unsupported environment exits 2, which fails
+  # the step (bash runs with -e), so it can never be reported as success.
+  c2d-platform-mutants:
+    name: C2-D portable posix mutants / ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-latest
+        python:
+          - "3.11"
+          - "3.12"
+          - "3.13"
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Require a native arm64 runner and interpreter
+        shell: bash
+        run: |
+          uname -a
+          test "$(uname -m)" = "arm64"
+          python -c "import platform, sys; m = platform.machine(); print('interpreter machine:', m); sys.exit(0 if m == 'arm64' else 1)"
+
+      - name: Install RIG Sentinel (non-editable) and development dependencies
+        shell: bash
+        run: |
+          python -m pip install ".[dev]"
+
+      - name: Run the C2-D portable mutants (every mutant must be caught)
+        shell: bash
+        run: |
+          python scripts/ci/c2d_platform_mutants.py --profile portable
+
+      - name: Run the C2-D POSIX mutants (every mutant must be caught)
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          python scripts/ci/c2d_platform_mutants.py --profile posix

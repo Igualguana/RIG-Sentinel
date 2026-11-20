@@ -2,8 +2,8 @@
 
 The only audit module allowed to touch the filesystem (founder decision F11, D-C2-3/D-C2-4).
 It provides exactly what C2-B key files need: path rules, opening a key directory safely,
-and reading or exclusively creating one small private file in it. There is no writer lock,
-segment, anchor or recovery code here.
+and reading or exclusively creating one small private file in it. Key directories have no writer
+lock, segment, anchor or recovery code (see the C2-C and C2-D sections below for audit storage).
 
 POSIX (Linux, macOS):
 * The configured directory must be an absolute, canonical path (``realpath(path) == path``).
@@ -49,6 +49,21 @@ Audit storage (Genesis B2-M2-C2-C), separate classes so key-file and audit opera
   (tmpfs, ramfs) filesystems are refused (best effort, fail closed). It cannot authenticate physical
   storage.
 * No protection is claimed against processes with the same credentials, or root.
+
+Writer lock (Genesis B2-M2-C2-D), :class:`WriterLock` from :meth:`ChainDirectory.acquire_writer_lock`:
+* POSIX only: ``flock(LOCK_EX | LOCK_NB)`` on ``chain-<id>/.writer.lock``, a permanent, empty, private
+  file opened read-only relative to the held chain descriptor. An existing lock file is never
+  unlinked, renamed, truncated or chmod-ed by this module; only its exclusive creator sets mode 0o600
+  on the file it has just created, and removes only that file if its own checks fail. Windows refuses
+  before any I/O (audit storage is read-only).
+* Advisory: it excludes only cooperating RIG Sentinel writers (in this process or another). It does
+  not stop processes that ignore it, same-account processes, or root. Identity checks after locking
+  and in :meth:`WriterLock.verify_held` detect substitution of the lock file; they cannot prevent it.
+* Non-blocking only (no waits, no retry loops): contention raises ``LOCKED``. Release closes the
+  descriptors (no ``LOCK_UN``); the kernel releases the lock when the last reference closes or the
+  process dies. After a fork the child's copies are closed and the child is never an owner.
+* Callers (C3) must hold the lock for the writer's whole lifetime and call ``verify_held`` before every
+  protected operation; the C2-C primitives themselves stay lock-agnostic.
 """
 
 from __future__ import annotations
@@ -78,11 +93,13 @@ __all__ = [
     "CreatedToken",
     "Durability",
     "ListResult",
+    "LockState",
     "MountEntry",
     "SafeAppendFile",
     "SafeDirectory",
     "SafeReadFile",
     "WindowsAttestation",
+    "WriterLock",
     "check_chain_directory_name",
     "check_chain_member_name",
     "check_file_name",
@@ -711,6 +728,62 @@ def _posix_create_member(dfd: int, name: str, max_size: int) -> tuple[int, os.st
     flags = (os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
              | getattr(os, "O_NOCTTY", 0))
     return _posix_open_member(dfd, name, flags, max_size, create=True)
+
+
+def _lock_create_problem(error: OSError) -> tuple[StorageErrorCode, str]:
+    """C2-D (DV-H1-1, Option A): classify the actual errno of a failed lock-file create; never LOCKED."""
+    number = error.errno
+    if number in (errno.EACCES, errno.EPERM):
+        return (StorageErrorCode.PERMISSION_DENIED, "lock:create-denied")
+    if number in (errno.ELOOP, getattr(errno, "EMLINK", -1), errno.ENOTDIR):  # a link or non-directory
+        return (StorageErrorCode.UNSAFE_PATH, "lock:create")
+    return (StorageErrorCode.STORAGE_UNAVAILABLE, "lock:create")  # ENOSPC, EDQUOT, EROFS, EIO and anything unknown
+
+
+def _posix_create_lock_file(dfd: int) -> tuple[StorageErrorCode, str] | None:
+    """C2-D: create the empty writer lock file (DV-H1-1, Option A). The only code that creates that name.
+
+    One exclusive, descriptor-relative create with ``O_RDONLY | O_EXCL | O_NOFOLLOW | O_CLOEXEC`` (no
+    writable descriptor ever exists) whose errno is classified as it is, never inferred. Mode 0o600 is
+    then set exactly, and the regular-file, owner, mode, size and single-link checks plus a pathname
+    identity check must pass. ``None`` means created and valid, or ``EEXIST`` (a concurrent creator, or a
+    planted object, won): the caller then opens and validates the existing name exactly once. After any
+    later failure only our own file is removed (never a substituted one), and the descriptor is always
+    closed, also when a ``BaseException`` propagates. It lives with the C2-C POSIX primitives: every caller
+    has already refused non-POSIX platforms.
+    """
+    create_flags = (os.O_RDONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+                    | getattr(os, "O_NOCTTY", 0))
+    owner = os.geteuid()  # type: ignore[attr-defined]
+    try:
+        lock_fd = os.open(_WRITER_LOCK_NAME, create_flags, 0o600, dir_fd=dfd)
+    except OSError as error:
+        if error.errno == errno.EEXIST:
+            return None
+        return _lock_create_problem(error)
+    created: _Identity | None = None
+    problem: tuple[StorageErrorCode, str] | None = None
+    try:
+        created = _identity(os.fstat(lock_fd))  # first, so every later failure removes only this file
+        os.fchmod(lock_fd, 0o600)
+        label = _lock_file_label(os.fstat(lock_fd), owner)
+        if label is not None:
+            problem = (StorageErrorCode.FILE_UNSAFE, label)
+        elif _identity(_named_identity(dfd, _WRITER_LOCK_NAME)) != created:
+            problem = (StorageErrorCode.FILE_UNSAFE, "lock:changed")
+    except FileNotFoundError:
+        problem = (StorageErrorCode.FILE_UNSAFE, "lock:changed")  # our new name vanished
+    except OSError:
+        problem = (StorageErrorCode.STORAGE_UNAVAILABLE, "lock:create-verify")
+    except BaseException:
+        if created is not None:
+            _posix_unlink_if_ours(dfd, _WRITER_LOCK_NAME, lock_fd, created)
+        _close_quietly(lock_fd)
+        raise
+    if problem is not None and created is not None:
+        _posix_unlink_if_ours(dfd, _WRITER_LOCK_NAME, lock_fd, created)
+    _close_quietly(lock_fd)
+    return problem
 
 
 def _posix_open_append_member(dfd: int, name: str, max_size: int) -> tuple[int, os.stat_result]:
@@ -1416,6 +1489,240 @@ class SafeReadFile(_Guarded):
     __str__ = __repr__
 
 
+# --- C2-D: writer lock (POSIX only; advisory; D-C2D-1 ... D-C2D-14) -------------------------------------
+
+
+class LockState(StrEnum):
+    """Writer-lock lifecycle (D-C2D-14). INVALID, RELEASED and INHERITED are terminal."""
+
+    NEW = "new"  # internal only: being acquired; never returned to a caller
+    HELD = "held"
+    INVALID = "invalid"
+    RELEASED = "released"
+    INHERITED = "inherited"  # a forked child's view of its parent's lock; never an owner
+
+
+_TERMINAL_LOCK_LABELS = {
+    LockState.NEW: "lock:invalid",
+    LockState.INVALID: "lock:invalid",
+    LockState.RELEASED: "lock:released",
+    LockState.INHERITED: "lock:forked",
+}
+_HELD_LOCKS: dict[int, WriterLock] = {}  # this process's HELD locks, for the at-fork hook
+
+
+def _lock_capable() -> bool:
+    """Attribute presence only (never function identity), so test wrappers cannot trip it."""
+    return (_posix_write_capable() and fcntl is not None and hasattr(fcntl, "flock")
+            and hasattr(os, "register_at_fork"))
+
+
+def _lock_file_label(st: os.stat_result, uid: int) -> str | None:
+    """The lock file must be a private, empty, single-link regular file owned by ``uid``."""
+    if not stat.S_ISREG(st.st_mode):
+        return "lock:type"
+    if st.st_nlink != 1:
+        return "lock:links"
+    if st.st_uid != uid or (st.st_mode & 0o077) != 0:
+        return "lock:permissions"
+    if st.st_size != 0:
+        return "lock:size"
+    return None
+
+
+def _posix_open_lock_fd(dfd: int) -> int:
+    """Read-only, no symlinks, close-on-exec, never blocks on a planted FIFO; relative to the chain fd."""
+    lock_flags = (os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | getattr(os, "O_NOCTTY", 0)
+                  | getattr(os, "O_NONBLOCK", 0))
+    return os.open(_WRITER_LOCK_NAME, lock_flags, dir_fd=dfd)
+
+
+def _lock_open_problem(error: OSError) -> tuple[StorageErrorCode, str]:
+    number = error.errno
+    if number in (errno.EACCES, errno.EPERM):
+        return (StorageErrorCode.PERMISSION_DENIED, "lock:open-denied")
+    if number in (errno.ELOOP, getattr(errno, "EMLINK", -1)):
+        return (StorageErrorCode.UNSAFE_PATH, "lock:open")
+    if number in (errno.ENXIO, errno.EISDIR):
+        return (StorageErrorCode.FILE_UNSAFE, "lock:type")
+    return (StorageErrorCode.STORAGE_UNAVAILABLE, "lock:open")
+
+
+def _posix_open_lock_file(dfd: int) -> tuple[int | None, tuple[StorageErrorCode, str] | None]:
+    """Open the existing lock file, or create it once and then open it (no retry loop)."""
+    try:
+        return _posix_open_lock_fd(dfd), None
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        return None, _lock_open_problem(error)
+    problem = _posix_create_lock_file(dfd)
+    if problem is not None:
+        return None, problem
+    try:
+        return _posix_open_lock_fd(dfd), None
+    except OSError as error:
+        return None, _lock_open_problem(error)
+
+
+def _lock_flock_problem(error: OSError) -> tuple[StorageErrorCode, str]:
+    """Only documented contention is ``LOCKED``; a denial is never disguised as contention (H-2)."""
+    number = error.errno
+    if number in (errno.EWOULDBLOCK, errno.EAGAIN):
+        return (StorageErrorCode.LOCKED, "lock:held")
+    if number in (errno.EACCES, errno.EPERM):
+        return (StorageErrorCode.STORAGE_UNAVAILABLE, "lock:flock-denied")
+    if number in (getattr(errno, "EOPNOTSUPP", -1), getattr(errno, "ENOTSUP", -1)):
+        return (StorageErrorCode.UNSUPPORTED_FILESYSTEM, "lock:unsupported")
+    if number == errno.ENOLCK:
+        return (StorageErrorCode.STORAGE_UNAVAILABLE, "lock:resources")
+    if number == errno.EINTR:
+        return (StorageErrorCode.STORAGE_UNAVAILABLE, "lock:interrupted")
+    return (StorageErrorCode.STORAGE_UNAVAILABLE, "lock:flock")
+
+
+def _held_lock_problem(fd: int, dfd: int, locked: _Identity, uid: int) -> str | None:
+    """Descriptor identity and pathname identity must both still be the locked, valid lock file (M-1).
+
+    Detection only: a process with write access to the chain directory can still race these checks.
+    """
+    try:
+        held = os.fstat(fd)
+        named = os.stat(_WRITER_LOCK_NAME, dir_fd=dfd, follow_symlinks=False)
+    except FileNotFoundError:
+        return "lock:substituted"
+    except OSError:
+        return "lock:verify"
+    if _identity(held) != locked:
+        return "lock:changed"
+    if held.st_nlink == 0:
+        return "lock:substituted"  # our inode lost its name
+    descriptor_label = _lock_file_label(held, uid)
+    if descriptor_label is not None:
+        return descriptor_label
+    if _identity(named) != locked or not stat.S_ISREG(named.st_mode):
+        return "lock:substituted"
+    if named.st_nlink != 1:
+        return "lock:links"
+    return None
+
+
+class WriterLock(_Guarded):
+    """An exclusive, non-blocking, advisory writer lock on one chain directory (POSIX only).
+
+    Obtain it only from :meth:`ChainDirectory.acquire_writer_lock`. It excludes other cooperating RIG
+    Sentinel writers; it does not stop processes that ignore it, same-account processes or root. Use it as
+    a context manager. ``release`` is idempotent. ``verify_held`` must be called before every protected
+    operation (C3 contract); on any failure the lock becomes INVALID, its descriptors are closed and it can
+    never become HELD again. Not thread-safe; not picklable or copyable; ``repr`` shows only the state.
+    """
+
+    __slots__ = ("_dfd", "_fd", "_locked", "_owner", "_state")
+
+    def __init__(self, *, _dfd: int) -> None:
+        self._dfd: int | None = _dfd
+        self._fd: int | None = None
+        self._locked: _Identity | None = None
+        self._owner = os.getpid()
+        self._state = LockState.NEW
+
+    @property
+    def state(self) -> LockState:
+        return self._state
+
+    @property
+    def held(self) -> bool:
+        return self._state is LockState.HELD and os.getpid() == self._owner
+
+    def _close_fds(self) -> None:
+        """Idempotent: slots are cleared before closing, so a reused descriptor number is never closed."""
+        lock_fd, dir_fd = self._fd, self._dfd
+        self._fd = None
+        self._dfd = None
+        _close_quietly(lock_fd)
+        _close_quietly(dir_fd)
+
+    def _end(self, state: LockState) -> None:
+        """Enter a terminal state (only from NEW or HELD), forget the lock and close its descriptors."""
+        if self._state in (LockState.NEW, LockState.HELD):
+            self._state = state
+        _HELD_LOCKS.pop(id(self), None)
+        self._close_fds()
+
+    def _acquire(self) -> tuple[StorageErrorCode, str] | None:
+        dfd: int = self._dfd  # type: ignore[assignment]
+        uid = os.geteuid()  # type: ignore[attr-defined]
+        fd, problem = _posix_open_lock_file(dfd)
+        if problem is not None:
+            return problem
+        self._fd = fd
+        try:
+            opened = os.fstat(fd)  # type: ignore[arg-type]
+        except OSError:
+            return (StorageErrorCode.STORAGE_UNAVAILABLE, "lock:open")
+        label = _lock_file_label(opened, uid)
+        if label is not None:
+            return (StorageErrorCode.FILE_UNSAFE, label)
+        self._locked = _identity(opened)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[union-attr]
+        except OSError as error:
+            return _lock_flock_problem(error)
+        after = _held_lock_problem(fd, dfd, self._locked, uid)  # type: ignore[arg-type]
+        if after is not None:
+            return (StorageErrorCode.LOCK_INVALID, after)
+        self._owner = os.getpid()
+        self._state = LockState.HELD
+        _HELD_LOCKS[id(self)] = self
+        return None
+
+    def verify_held(self) -> None:
+        """Fail closed unless this process still holds this lock on the same lock file (M-3)."""
+        if self._state is not LockState.HELD:
+            raise _fail(StorageErrorCode.LOCK_INVALID, _TERMINAL_LOCK_LABELS[self._state])
+        if os.getpid() != self._owner:
+            self._end(LockState.INHERITED)  # closes this process's inherited copies only
+            raise _fail(StorageErrorCode.LOCK_INVALID, "lock:forked")
+        label = _held_lock_problem(self._fd, self._dfd, self._locked, os.geteuid())  # type: ignore[arg-type,attr-defined]
+        if label is not None:
+            self._end(LockState.INVALID)
+            raise _fail(StorageErrorCode.LOCK_INVALID, label)
+
+    def release(self) -> None:
+        """Idempotent. Closes the descriptors (never ``LOCK_UN``, never unlinks the lock file)."""
+        if self._state is not LockState.HELD:
+            return
+        if os.getpid() != self._owner:
+            self._end(LockState.INHERITED)
+            return
+        self._end(LockState.RELEASED)
+
+    def close(self) -> None:
+        self.release()
+
+    def _inherit(self) -> None:
+        """At-fork hook, child side: never an owner; close BOTH inherited descriptors (H-1)."""
+        if self._state is LockState.HELD:
+            self._state = LockState.INHERITED
+        self._close_fds()
+
+    def __repr__(self) -> str:
+        return f"WriterLock(state={self._state.value!r})"
+
+    __str__ = __repr__
+
+
+def _invalidate_inherited_locks() -> None:
+    """Runs in a forked child (interpreter forks only): every inherited lock becomes INHERITED, closed."""
+    for lock in list(_HELD_LOCKS.values()):
+        lock._inherit()
+    _HELD_LOCKS.clear()
+
+
+def _after_fork_in_child() -> None:
+    _invalidate_inherited_locks()  # looked up at call time
+
+
 class _AuditBase(_Guarded):
     __slots__ = ("_closed", "_fd", "_identities", "_kind", "_path")
     _ROLE = ""
@@ -1539,6 +1846,26 @@ class ChainDirectory(_AuditBase):
             pass
         raise _fail(StorageErrorCode.STORAGE_UNAVAILABLE, "directory:dup")
 
+    def acquire_writer_lock(self) -> WriterLock:
+        """Take this chain's writer lock: one non-blocking attempt (C2-D). POSIX only.
+
+        Contention raises ``LOCKED``. Every failure, including an exception raised by a signal handler,
+        closes every descriptor this call opened. The returned lock is HELD.
+        """
+        self._require_posix_write()
+        if not _lock_capable():
+            raise _fail(StorageErrorCode.UNSUPPORTED_PLATFORM, "lock:platform")
+        lock = WriterLock(_dfd=self._dup_dir())
+        try:
+            problem = lock._acquire()
+        except BaseException:
+            lock._end(LockState.INVALID)  # M-2: close everything, then let the original exception through
+            raise
+        if problem is not None:
+            lock._end(LockState.INVALID)
+            raise _fail(*problem)
+        return lock
+
     def create_exclusive(self, name: object, *, max_size: object) -> SafeAppendFile:
         """Create a new segment (``O_EXCL``, mode 0o600, never overwrites) and return its append handle."""
         self._require_posix_write()
@@ -1629,3 +1956,7 @@ class ChainDirectory(_AuditBase):
         if problem is not None:
             raise _fail(*problem)
         return removed
+
+
+if hasattr(os, "register_at_fork"):  # POSIX: interpreter forks run the child hook (C-level forks may not)
+    os.register_at_fork(after_in_child=_after_fork_in_child)
