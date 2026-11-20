@@ -82,6 +82,10 @@ class StorageErrorCode(StrEnum):
     DURABILITY_UNCERTAIN = "durability_uncertain"  # a namespace change happened; its directory sync failed
     ENTRY_LIMIT_EXCEEDED = "entry_limit_exceeded"
     FILE_TOO_LARGE = "file_too_large"
+    # Writer lock (B2-M2-C2-D, D-C2D-8 / D-C2D-11)
+    LOCKED = "locked"  # documented flock contention only (EWOULDBLOCK / EAGAIN)
+    LOCK_INVALID = "lock_invalid"  # the lock is not, or is no longer, held by this process and object
+    PERMISSION_DENIED = "permission_denied"  # the lock file could not be opened or created: access denied
     # Internal invariants (splice proof)
     INTERNAL_INVARIANT = "internal_invariant"
 
