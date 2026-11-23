@@ -338,9 +338,11 @@ def test_write_primitives_live_only_in_posix_code():
         "_posix_write_fully", "_posix_replace", "_posix_link_no_replace",
         # POSIX-only handle (constructed only by ChainDirectory.create_exclusive / open_append)
         "SafeAppendFile.append",
+        # C2-D (DV-H1-1 Option A, founder-authorized): the single, exclusive creator of .writer.lock
+        "_posix_create_lock_file",
     }
     assert writers <= allowed, writers - allowed
-    assert creators <= {"_posix_create", "_posix_create_member", "_posix_replace"}, creators
+    assert creators <= {"_posix_create", "_posix_create_member", "_posix_replace", "_posix_create_lock_file"}, creators
     assert not any("windows" in scope.lower() for scope in writers | creators)
 
 

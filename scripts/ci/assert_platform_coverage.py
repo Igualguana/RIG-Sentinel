@@ -103,22 +103,75 @@ C2C_LINUX = [
     "test_linux_real_mountinfo_parses_and_the_audit_root_is_accepted",
 ]
 
+# B2-M2-C2-D: the chain writer lock (tests/test_audit_c2d_writer_lock.py). Mocked tests are never listed.
+C2D_MODULE = "tests.test_audit_c2d_writer_lock"
+C2D_NTFS = [
+    "test_ntfs_writer_lock_is_refused_before_any_io",
+]
+C2D_POSIX = [
+    "test_posix_same_process_independent_opens_contend",
+    "test_posix_lifecycle_and_context_manager",
+    "test_posix_cross_process_contention",
+    "test_posix_lock_is_released_when_the_holder_is_killed",
+    "test_posix_lock_is_released_when_the_holder_exits_without_release",
+    "test_posix_symlink_at_the_lock_name_is_refused",
+    "test_posix_lock_descriptors_are_read_only_and_close_on_exec",
+    "test_posix_hard_linked_lock_file_is_refused",
+    "test_posix_wrong_file_types_are_refused_without_blocking[fifo]",
+    "test_posix_wrong_file_types_are_refused_without_blocking[directory]",
+    "test_posix_unsafe_modes_are_refused_and_never_repaired[416]",
+    "test_posix_unsafe_modes_are_refused_and_never_repaired[388]",
+    "test_posix_unsafe_modes_are_refused_and_never_repaired[432]",
+    "test_posix_unsafe_modes_are_refused_and_never_repaired[390]",
+    "test_posix_created_lock_file_is_empty_and_private[0]",
+    "test_posix_created_lock_file_is_empty_and_private[18]",
+    "test_posix_created_lock_file_is_empty_and_private[63]",
+    "test_posix_created_lock_file_is_empty_and_private[191]",
+    "test_posix_non_empty_lock_file_is_refused_and_never_truncated",
+    "test_posix_growth_after_acquisition_invalidates",
+    "test_posix_substitution_before_flock_is_detected",
+    "test_posix_descriptor_change_before_flock_is_detected",
+    "test_posix_substitution_after_acquisition_is_detected_not_prevented",
+    "test_posix_hard_link_after_acquisition_is_detected",
+    "test_posix_fork_child_never_owns_the_lock[hook]",
+    "test_posix_fork_child_never_owns_the_lock[release-while-child]",
+    "test_posix_fork_child_never_owns_the_lock[nohook]",
+    "test_posix_create_denied_is_permission_denied",
+    "test_posix_open_denied_is_permission_denied_not_contention",
+    "test_posix_lock_file_is_never_removed_or_written",
+    # DV-H1-1 Option A: the dedicated creator (EEXIST races, post-create substitution and failure)
+    "test_posix_symlink_planted_before_create_is_never_followed",
+    "test_posix_unsafe_file_planted_before_create_is_refused_and_kept",
+    "test_posix_substitution_right_after_create_is_detected_and_the_foreign_file_kept",
+    "test_posix_fchmod_failure_after_create_removes_only_our_file",
+]
+C2D_LINUX = [
+    "test_linux_no_descriptor_leaks_on_any_path",
+    "test_linux_create_failures_leak_no_descriptors",
+    "test_linux_flock_and_fcntl_locks_do_not_interact",
+]
+C2D_MACOS = [
+    "test_macos_flock_and_fcntl_locks_interact_and_fail_closed",
+    "test_macos_acl_denied_create_is_permission_denied",
+]
+
 
 def _qualify(module, names):
     return [module + "::" + name for name in names]
 
 
-PROFILES = {  # C2-B lists unchanged (17, 12, 11); C2-C adds 3, 42, 40
-    "windows-ntfs": _qualify(MODULE, NTFS) + _qualify(C2C_MODULE, C2C_NTFS),
-    "linux": _qualify(MODULE, POSIX + LINUX) + _qualify(C2C_MODULE, C2C_POSIX + C2C_LINUX),
-    "macos": _qualify(MODULE, POSIX) + _qualify(C2C_MODULE, C2C_POSIX),
+PROFILES = {  # C2-B lists unchanged (17, 12, 11); C2-C adds 3, 42, 40; C2-D adds 1, 37, 36
+    "windows-ntfs": _qualify(MODULE, NTFS) + _qualify(C2C_MODULE, C2C_NTFS) + _qualify(C2D_MODULE, C2D_NTFS),
+    "linux": (_qualify(MODULE, POSIX + LINUX) + _qualify(C2C_MODULE, C2C_POSIX + C2C_LINUX)
+              + _qualify(C2D_MODULE, C2D_POSIX + C2D_LINUX)),
+    "macos": _qualify(MODULE, POSIX) + _qualify(C2C_MODULE, C2C_POSIX) + _qualify(C2D_MODULE, C2D_POSIX + C2D_MACOS),
 }
 
 
 def outcomes(path):
     results = {}
     for case in ET.parse(path).getroot().iter("testcase"):
-        if case.get("classname") not in (MODULE, C2C_MODULE):
+        if case.get("classname") not in (MODULE, C2C_MODULE, C2D_MODULE):
             continue
         if case.find("skipped") is not None:
             state = "skipped"
