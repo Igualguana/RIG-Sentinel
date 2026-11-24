@@ -86,6 +86,12 @@ class StorageErrorCode(StrEnum):
     LOCKED = "locked"  # documented flock contention only (EWOULDBLOCK / EAGAIN)
     LOCK_INVALID = "lock_invalid"  # the lock is not, or is no longer, held by this process and object
     PERMISSION_DENIED = "permission_denied"  # the lock file could not be opened or created: access denied
+    # Persistent writer (B2-M2-C3, D-C3-4; additive)
+    RECOVERY_REQUIRED = "recovery_required"  # on-disk state C3 does not resume from (C4 owns recovery)
+    ANCHOR_UPDATE_FAILED = "anchor_update_failed"  # record durable, anchor not confirmed; the writer sealed
+    SINK_SEALED = "sink_sealed"  # the writer is sealed or closed; no further write is made
+    SINK_BUSY = "sink_busy"  # concurrent entry refused; writes never interleave
+    KEY_CHANGE_REQUIRES_ROTATION = "key_change_requires_rotation"  # supplied keys differ from the anchored ones
     # Internal invariants (splice proof)
     INTERNAL_INVARIANT = "internal_invariant"
 

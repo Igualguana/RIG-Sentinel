@@ -1,0 +1,203 @@
+name: RIG Sentinel C3 native
+
+# Genesis B2-M2-C3-H3: native verification of the C3 persistent writer (Gemini M-1). Linux x86_64, macOS Intel
+# x86_64 and Windows x64 (portable only). Apple Silicon runs in ci-c3-macos-arm64.yml (runner-capacity isolation).
+# Every verification step fails the job on a failed, skipped (outside the documented policy), missing or
+# uncollected test, on a surviving or unapplied mutant, on an unsupported environment (exit 2), on a timeout and
+# on cancellation; nothing here uses continue-on-error or "|| true". Existing workflows are not changed.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: c3-native-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+  PYTHONUTF8: "1"
+
+jobs:
+  c3-native-tests:
+    name: C3 native tests / ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, python: "3.11", profile: linux, arch: x86_64 }
+          - { os: ubuntu-24.04, python: "3.12", profile: linux, arch: x86_64 }
+          - { os: ubuntu-24.04, python: "3.13", profile: linux, arch: x86_64 }
+          - { os: ubuntu-26.04, python: "3.13", profile: linux, arch: x86_64 }
+          - { os: macos-15-intel, python: "3.11", profile: macos, arch: x86_64 }
+          - { os: macos-15-intel, python: "3.12", profile: macos, arch: x86_64 }
+          - { os: macos-15-intel, python: "3.13", profile: macos, arch: x86_64 }
+          - { os: windows-2025, python: "3.11", profile: windows-portable, arch: AMD64 }
+          - { os: windows-2025, python: "3.12", profile: windows-portable, arch: AMD64 }
+          - { os: windows-2025, python: "3.13", profile: windows-portable, arch: AMD64 }
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6 (v6.1.0)
+        with:
+          persist-credentials: false
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6 (v6.3.0)
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Record system information
+        run: |
+          set -euo pipefail
+          mkdir -p c3-evidence
+          {
+            echo "uname -a: $(uname -a)"
+            echo "uname -m: $(uname -m)"
+            echo "uid: $(id -u)"
+            echo "ImageOS: ${ImageOS:-unknown}"
+            echo "ImageVersion: ${ImageVersion:-unknown}"
+            python -VV
+            python -c "import platform; print('interpreter machine:', platform.machine())"
+          } | tee c3-evidence/system-info.txt
+
+      - name: Require the expected architecture and a non-root user
+        run: |
+          set -euo pipefail
+          python -c "import platform, sys; m = platform.machine(); print('interpreter machine:', m); sys.exit(0 if m == '${{ matrix.arch }}' else 1)"
+          if [ "${{ runner.os }}" != "Windows" ]; then
+            test "$(uname -m)" = "${{ matrix.arch }}"
+            test "$(id -u)" != "0"
+          fi
+
+      - name: Install RIG Sentinel (non-editable) and development dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install ".[dev]"
+          python -m pip freeze | tee c3-evidence/pip-freeze.txt
+
+      - name: Run the C3 tests (native tier on POSIX, portable tier everywhere)
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          python -m pytest -q -p no:cacheprovider -rs -W error::Warning --junitxml=c3-evidence/c3-junit.xml tests/test_audit_c3_writer.py 2>&1 | tee c3-evidence/c3-tests.log
+
+      - name: Require C3 coverage (${{ matrix.profile }}; skipped, missing or failed means failed)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          python scripts/ci/assert_c3_native_coverage.py --junit c3-evidence/c3-junit.xml --profile ${{ matrix.profile }} 2>&1 | tee c3-evidence/c3-coverage.txt
+
+      - name: Upload C3 test evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6 (v6.0.0)
+        with:
+          name: c3-tests-${{ matrix.os }}-py${{ matrix.python }}
+          path: c3-evidence/
+          if-no-files-found: error
+          retention-days: 90
+
+  c3-mutants:
+    name: C3 mutants (${{ matrix.profiles }}) / ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, python: "3.11", profiles: portable posix, arch: x86_64 }
+          - { os: ubuntu-24.04, python: "3.12", profiles: portable posix, arch: x86_64 }
+          - { os: ubuntu-24.04, python: "3.13", profiles: portable posix, arch: x86_64 }
+          - { os: macos-15-intel, python: "3.11", profiles: portable posix, arch: x86_64 }
+          - { os: macos-15-intel, python: "3.12", profiles: portable posix, arch: x86_64 }
+          - { os: macos-15-intel, python: "3.13", profiles: portable posix, arch: x86_64 }
+          - { os: windows-2025, python: "3.11", profiles: portable, arch: AMD64 }
+          - { os: windows-2025, python: "3.12", profiles: portable, arch: AMD64 }
+          - { os: windows-2025, python: "3.13", profiles: portable, arch: AMD64 }
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6 (v6.1.0)
+        with:
+          persist-credentials: false
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6 (v6.3.0)
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Record system information and require the expected architecture
+        run: |
+          set -euo pipefail
+          mkdir -p c3-evidence
+          {
+            echo "uname -a: $(uname -a)"
+            echo "uid: $(id -u)"
+            echo "ImageOS: ${ImageOS:-unknown}"
+            echo "ImageVersion: ${ImageVersion:-unknown}"
+            python -VV
+          } | tee c3-evidence/system-info.txt
+          python -c "import platform, sys; m = platform.machine(); print('interpreter machine:', m); sys.exit(0 if m == '${{ matrix.arch }}' else 1)"
+          if [ "${{ runner.os }}" != "Windows" ]; then
+            test "$(uname -m)" = "${{ matrix.arch }}"
+            test "$(id -u)" != "0"
+          fi
+
+      # Non-editable, as in the C2 mutant jobs: the runner's import probe requires its temporary mutated copy
+      # of src/ to be the code under test.
+      - name: Install RIG Sentinel (non-editable) and development dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install ".[dev]"
+          python -m pip freeze | tee c3-evidence/pip-freeze.txt
+
+      - name: Validate the mutant tables (ids, killing tests, anchors)
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          python scripts/ci/c3_platform_mutants.py --profile portable --list | tee c3-evidence/c3-mutants-portable-list.txt
+          python scripts/ci/c3_platform_mutants.py --profile posix --list | tee c3-evidence/c3-mutants-posix-list.txt
+
+      - name: Run the C3 portable mutants (every mutant must be caught)
+        if: contains(matrix.profiles, 'portable')
+        timeout-minutes: 60
+        run: |
+          set -euo pipefail
+          python scripts/ci/c3_platform_mutants.py --profile portable 2>&1 | tee c3-evidence/c3-mutants-portable.log
+          python scripts/ci/assert_c3_native_coverage.py --mutants-log c3-evidence/c3-mutants-portable.log --mutant-profile portable
+
+      - name: Run the C3 POSIX mutants (every mutant must be caught; unsupported fails)
+        if: ${{ !cancelled() && contains(matrix.profiles, 'posix') }}
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          python scripts/ci/c3_platform_mutants.py --profile posix 2>&1 | tee c3-evidence/c3-mutants-posix.log
+          python scripts/ci/assert_c3_native_coverage.py --mutants-log c3-evidence/c3-mutants-posix.log --mutant-profile posix
+
+      - name: Upload C3 mutant evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6 (v6.0.0)
+        with:
+          name: c3-mutants-${{ matrix.os }}-py${{ matrix.python }}
+          path: c3-evidence/
+          if-no-files-found: error
+          retention-days: 90
