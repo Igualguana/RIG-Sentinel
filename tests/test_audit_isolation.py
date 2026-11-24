@@ -28,7 +28,7 @@ FORBIDDEN_MODULES = {
 # F11 (amended by D-C2-3/D-C2-4): the only audit module that may touch the filesystem.
 IO_ALLOWED = {"safepath.py": frozenset({"os", "fcntl"})}
 FORBIDDEN_CALLS = {"open", "eval", "exec", "compile", "__import__", "input", "breakpoint", "print"}
-THREADING_ALLOWED = {"sinks.py"}
+THREADING_ALLOWED = {"sinks.py", "jsonl.py"}  # jsonl.py: one non-blocking lock (C3, D-C3-5)
 
 
 def _imports(tree):
@@ -49,6 +49,8 @@ def test_expected_audit_modules_exist():
         "bounded_json.py", "chainverify.py", "records.py", "storage_errors.py",
         # B2-M2-C2-B: key files; safepath.py is the single filesystem module.
         "keyfile.py", "safepath.py",
+        # B2-M2-C3: the persistent writer; it reaches the filesystem only through safepath.py.
+        "jsonl.py",
     }
 
 

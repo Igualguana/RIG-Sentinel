@@ -1,0 +1,187 @@
+name: RIG Sentinel C3 macOS Apple Silicon
+
+# Genesis B2-M2-C3-H3: native verification of the C3 persistent writer on Apple Silicon (Gemini M-1). Kept in its
+# own workflow, like ci-macos-arm64.yml, so runner-capacity delays do not hold up the other C3 jobs. The runner
+# label is pinned to macos-26 (not the moving macos-latest); the job fails unless both the runner and the
+# interpreter are arm64, so an x86_64 or Rosetta environment can never be reported as Apple Silicon evidence.
+# Existing workflows are not changed.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: c3-macos-arm64-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+  PYTHONUTF8: "1"
+
+jobs:
+  c3-native-tests:
+    name: C3 native tests / ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-26
+        python:
+          - "3.11"
+          - "3.12"
+          - "3.13"
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6 (v6.1.0)
+        with:
+          persist-credentials: false
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6 (v6.3.0)
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Record system information
+        run: |
+          set -euo pipefail
+          mkdir -p c3-evidence
+          {
+            echo "uname -a: $(uname -a)"
+            echo "uname -m: $(uname -m)"
+            echo "uid: $(id -u)"
+            echo "ImageOS: ${ImageOS:-unknown}"
+            echo "ImageVersion: ${ImageVersion:-unknown}"
+            python -VV
+            python -c "import platform; print('interpreter machine:', platform.machine())"
+          } | tee c3-evidence/system-info.txt
+
+      - name: Require a native arm64 runner and interpreter and a non-root user
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "arm64"
+          python -c "import platform, sys; m = platform.machine(); print('interpreter machine:', m); sys.exit(0 if m == 'arm64' else 1)"
+          test "$(id -u)" != "0"
+
+      - name: Install RIG Sentinel (non-editable) and development dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install ".[dev]"
+          python -m pip freeze | tee c3-evidence/pip-freeze.txt
+
+      - name: Run the C3 tests (native tier included)
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          python -m pytest -q -p no:cacheprovider -rs -W error::Warning --junitxml=c3-evidence/c3-junit.xml tests/test_audit_c3_writer.py 2>&1 | tee c3-evidence/c3-tests.log
+
+      - name: Require C3 coverage (macos; 20 applicable native tests; one Linux-only skip by policy)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          python scripts/ci/assert_c3_native_coverage.py --junit c3-evidence/c3-junit.xml --profile macos 2>&1 | tee c3-evidence/c3-coverage.txt
+
+      - name: Upload C3 test evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6 (v6.0.0)
+        with:
+          name: c3-tests-${{ matrix.os }}-arm64-py${{ matrix.python }}
+          path: c3-evidence/
+          if-no-files-found: error
+          retention-days: 90
+
+  c3-mutants:
+    name: C3 mutants (portable posix) / ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-26
+        python:
+          - "3.11"
+          - "3.12"
+          - "3.13"
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6 (v6.1.0)
+        with:
+          persist-credentials: false
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6 (v6.3.0)
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Record system information and require a native arm64 runner and interpreter
+        run: |
+          set -euo pipefail
+          mkdir -p c3-evidence
+          {
+            echo "uname -a: $(uname -a)"
+            echo "uid: $(id -u)"
+            echo "ImageOS: ${ImageOS:-unknown}"
+            echo "ImageVersion: ${ImageVersion:-unknown}"
+            python -VV
+          } | tee c3-evidence/system-info.txt
+          test "$(uname -m)" = "arm64"
+          python -c "import platform, sys; m = platform.machine(); print('interpreter machine:', m); sys.exit(0 if m == 'arm64' else 1)"
+          test "$(id -u)" != "0"
+
+      - name: Install RIG Sentinel (non-editable) and development dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install ".[dev]"
+          python -m pip freeze | tee c3-evidence/pip-freeze.txt
+
+      - name: Validate the mutant tables (ids, killing tests, anchors)
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          python scripts/ci/c3_platform_mutants.py --profile portable --list | tee c3-evidence/c3-mutants-portable-list.txt
+          python scripts/ci/c3_platform_mutants.py --profile posix --list | tee c3-evidence/c3-mutants-posix-list.txt
+
+      - name: Run the C3 portable mutants (every mutant must be caught)
+        timeout-minutes: 60
+        run: |
+          set -euo pipefail
+          python scripts/ci/c3_platform_mutants.py --profile portable 2>&1 | tee c3-evidence/c3-mutants-portable.log
+          python scripts/ci/assert_c3_native_coverage.py --mutants-log c3-evidence/c3-mutants-portable.log --mutant-profile portable
+
+      - name: Run the C3 POSIX mutants (every mutant must be caught; unsupported fails)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          python scripts/ci/c3_platform_mutants.py --profile posix 2>&1 | tee c3-evidence/c3-mutants-posix.log
+          python scripts/ci/assert_c3_native_coverage.py --mutants-log c3-evidence/c3-mutants-posix.log --mutant-profile posix
+
+      - name: Upload C3 mutant evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f  # v6 (v6.0.0)
+        with:
+          name: c3-mutants-${{ matrix.os }}-arm64-py${{ matrix.python }}
+          path: c3-evidence/
+          if-no-files-found: error
+          retention-days: 90

@@ -1829,6 +1829,41 @@ class AuditDirectory(_AuditBase):
         child, identities = _windows_open_directory(self._path + "\\" + checked)
         return ChainDirectory(_kind="nt", _fd=None, _path=child, _identities=identities)
 
+    def verify_chain_named(self, chain: object) -> None:
+        """Raise unless this root's entry named like ``chain`` is that chain's held directory (C3, D-C3-3).
+
+        POSIX only and read-only: the entry is examined without following symlinks and must be a directory
+        whose ``(st_dev, st_ino)`` equals the held descriptor's. It never creates, opens, renames, removes or
+        modifies anything. Detection at check time only: substitution of the audit root or an ancestor, and a
+        swap and swap-back between two checks, are not detected; same-account processes are not prevented.
+        """
+        self._require_open()
+        if type(chain) is not ChainDirectory:
+            raise _fail(StorageErrorCode.INPUT_TYPE_INVALID, "chain:type")
+        chain._require_open()
+        capable = os.stat in os.supports_dir_fd and os.stat in os.supports_follow_symlinks
+        if self._kind != "posix" or chain._kind != "posix" or not capable:
+            raise _fail(StorageErrorCode.UNSUPPORTED_PLATFORM, "chain:verify-platform")
+        entry: str | None = None
+        try:
+            entry = check_chain_directory_name(chain._path.rsplit("/", 1)[-1])
+        except StorageError:
+            entry = None
+        if entry is None:
+            raise _fail(StorageErrorCode.INTERNAL_INVARIANT, "chain:name")
+        verdict: str | None = None
+        try:
+            held_directory = os.fstat(chain._fd)  # type: ignore[arg-type]
+            entry_identity = _named_identity(self._fd, entry)  # type: ignore[arg-type]
+            if not stat.S_ISDIR(entry_identity.st_mode) or _identity(entry_identity) != _identity(held_directory):
+                verdict = "chain:replaced"
+        except FileNotFoundError:
+            verdict = "chain:missing"
+        except OSError:
+            verdict = "chain:verify"
+        if verdict is not None:
+            raise _fail(StorageErrorCode.UNSAFE_PATH, verdict)
+
 
 class ChainDirectory(_AuditBase):
     """One chain's directory: segments, the anchor, its temp and quarantine names (D-C2C-7)."""
