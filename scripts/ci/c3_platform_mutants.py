@@ -420,6 +420,9 @@ def main():
         if control is None or control.returncode != 0:
             print("CONTROL FAILED: unmutated killing tests do not pass" + NL
                   + ("timeout" if control is None else control.stdout[-3000:]))
+            if control is not None:  # C3-H3-F2: keep the evidence of a crash (pytest's stderr) and its exit code
+                print(f"control pytest exit code: {control.returncode}" + NL + "control stderr (tail):" + NL
+                      + (control.stderr[-3000:] or "(empty)"))
             return 1
         control_counts = counts(control.stdout)
         if control_counts.get("skipped", 0):

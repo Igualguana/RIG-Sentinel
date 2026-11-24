@@ -1417,18 +1417,43 @@ def test_t_cap_9_checkpoint_near_max_and_close_after_each_rejection(fs):
 # === 11. verify_chain_named (D-C3-3), portable ==========================================================================
 
 
-def test_verify_chain_named_refuses_windows_and_incapable_posix_before_any_os_call(monkeypatch):
-    def forbidden(*_args, **_kwargs):
-        raise AssertionError("os call")
+class _TrappedOs:
+    """C3-H3-F1: a stand-in for ``safepath``'s own ``os`` reference only; the shared ``os`` module is never touched.
 
-    monkeypatch.setattr(sp.os, "stat", forbidden)
-    monkeypatch.setattr(sp.os, "fstat", forbidden)
-    root = AuditDirectory(_kind="nt", _fd=None, _path="C:\\a", _identities=())
-    chain = ChainDirectory(_kind="nt", _fd=None, _path="C:\\a\\chain-" + FIXED_ID, _identities=())
-    error = error_of(root.verify_chain_named, chain)
-    assert (error.code, error.path) == (StorageErrorCode.UNSUPPORTED_PLATFORM, "chain:verify-platform")
-    posix_root = AuditDirectory(_kind="posix", _fd=None, _path="/a", _identities=())
-    assert error_of(posix_root.verify_chain_named, chain).code is StorageErrorCode.UNSUPPORTED_PLATFORM
+    Filesystem entry points record the attempt and raise; every other attribute (constants, capability tables)
+    delegates to the real module. Patching ``sp.os`` itself (not attributes of the global module) keeps pytest's
+    own use of ``os`` (for example ``os.fstat`` in its output capture since pytest 9.2) unaffected.
+    """
+
+    TRAPPED = frozenset({"stat", "fstat", "lstat", "open", "scandir", "listdir", "dup", "close"})
+
+    def __init__(self, real):
+        self._real = real
+        self.calls = []
+
+    def __getattr__(self, name):
+        if name in _TrappedOs.TRAPPED:
+            def trap(*_args, **_kwargs):
+                self.calls.append(name)
+                raise AssertionError("os call")
+            return trap
+        return getattr(self._real, name)
+
+
+def test_verify_chain_named_refuses_windows_and_incapable_posix_before_any_os_call(monkeypatch):
+    real_stat, real_fstat = os.stat, os.fstat
+    trapped = _TrappedOs(os)
+    with monkeypatch.context() as patch:
+        patch.setattr(sp, "os", trapped)  # scoped to safepath's module global; os.stat / os.fstat stay real
+        root = AuditDirectory(_kind="nt", _fd=None, _path="C:\\a", _identities=())
+        chain = ChainDirectory(_kind="nt", _fd=None, _path="C:\\a\\chain-" + FIXED_ID, _identities=())
+        error = error_of(root.verify_chain_named, chain)
+        assert (error.code, error.path) == (StorageErrorCode.UNSUPPORTED_PLATFORM, "chain:verify-platform")
+        posix_root = AuditDirectory(_kind="posix", _fd=None, _path="/a", _identities=())
+        assert error_of(posix_root.verify_chain_named, chain).code is StorageErrorCode.UNSUPPORTED_PLATFORM
+        assert trapped.calls == []  # no filesystem call was attempted before the refusal
+        assert os.stat is real_stat and os.fstat is real_fstat  # the shared os module was never modified
+    assert sp.os is os  # the stand-in is removed again
 
 
 def test_verify_chain_named_argument_and_state_checks():
